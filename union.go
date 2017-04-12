@@ -4,7 +4,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/influxdata/kapacitor/models"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/pipeline"
 )
 
@@ -12,87 +12,89 @@ type UnionNode struct {
 	node
 	u *pipeline.UnionNode
 
-	// Buffer of points/batches from each parent
-	sources [][]models.PointInterface
+	// Buffer of points/batches from each source.
+	sources [][]timeMessage
 	// the low water marks for each source.
 	lowMarks []time.Time
 
 	rename string
+
+	legacyOuts []*LegacyEdge
+}
+
+type timeMessage interface {
+	edge.Message
+	edge.TimeGetter
 }
 
 // Create a new  UnionNode which combines all parent data streams into a single stream.
 // No transformation of any kind is performed.
 func newUnionNode(et *ExecutingTask, n *pipeline.UnionNode, l *log.Logger) (*UnionNode, error) {
 	un := &UnionNode{
-		u:    n,
-		node: node{Node: n, et: et, logger: l},
+		u:      n,
+		node:   node{Node: n, et: et, logger: l},
+		rename: n.Rename,
 	}
 	un.node.runF = un.runUnion
 	return un, nil
 }
 
 func (u *UnionNode) runUnion([]byte) error {
-	union := make(chan srcPoint)
-	u.rename = u.u.Rename
-	// Spawn goroutine for each parent
-	errors := make(chan error, len(u.ins))
-	for i, in := range u.ins {
-		go func(index int, e *Edge) {
-			for p, ok := e.Next(); ok; p, ok = e.Next() {
-				union <- srcPoint{
-					src: index,
-					p:   p,
-				}
-			}
-			errors <- nil
-		}(i, in)
-	}
-
-	// Channel for returning the first if any errors, from parent goroutines.
-	errC := make(chan error, 1)
-
-	go func() {
-		for range u.ins {
-			err := <-errors
-			if err != nil {
-				errC <- err
-				return
-			}
-		}
-		// Close the union channel once all parents are done writing
-		close(union)
-	}()
-
-	//
-	// Emit values received from parents ordered by time.
-	//
-
 	// Keep buffer of values from parents so they can be ordered.
-	u.sources = make([][]models.PointInterface, len(u.ins))
+
+	u.sources = make([][]timeMessage, len(u.ins))
 	u.lowMarks = make([]time.Time, len(u.ins))
 
-	for {
-		select {
-		case err := <-errC:
-			// One of the parents errored out, return the error.
-			return err
-		case source, ok := <-union:
-			u.timer.Start()
-			if !ok {
-				// We are done, emit all buffered
-				return u.emitReady(true)
-			}
-			// Add newest point to buffer
-			u.sources[source.src] = append(u.sources[source.src], source.p)
+	consumer := edge.NewMultiConsumerWithStats(u.ins, u)
+	return consumer.Consume()
+}
 
-			// Emit the next values
-			err := u.emitReady(false)
-			if err != nil {
-				return err
-			}
-			u.timer.Stop()
-		}
+func (u *UnionNode) BufferedBatch(src int, batch edge.BufferedBatchMessage) error {
+	u.timer.Start()
+	defer u.timer.Stop()
+
+	if u.rename != "" {
+		batch = batch.ShallowCopy()
+		batch.SetBegin(batch.Begin().ShallowCopy())
+		batch.Begin().SetName(u.rename)
 	}
+
+	// Add newest point to buffer
+	u.sources[src] = append(u.sources[src], batch)
+
+	// Emit the next values
+	return u.emitReady(false)
+}
+
+func (u *UnionNode) Point(src int, p edge.PointMessage) error {
+	u.timer.Start()
+	defer u.timer.Stop()
+	if u.rename != "" {
+		p = p.ShallowCopy()
+		p.SetName(u.rename)
+	}
+
+	// Add newest point to buffer
+	u.sources[src] = append(u.sources[src], p)
+
+	// Emit the next values
+	return u.emitReady(false)
+}
+
+func (u *UnionNode) Barrier(src int, b edge.BarrierMessage) error {
+	u.timer.Start()
+	defer u.timer.Stop()
+
+	// Add newest point to buffer
+	u.sources[src] = append(u.sources[src], b)
+
+	// Emit the next values
+	return u.emitReady(false)
+}
+
+func (u *UnionNode) Finish() error {
+	// We are done, emit all buffered
+	return u.emitReady(true)
 }
 
 func (u *UnionNode) emitReady(drain bool) error {
@@ -106,7 +108,7 @@ func (u *UnionNode) emitReady(drain bool) error {
 		for i, values := range u.sources {
 			sourceMark := u.lowMarks[i]
 			if len(values) > 0 {
-				t := values[0].PointTime()
+				t := values[0].Time()
 				if mark.IsZero() || t.Before(mark) {
 					mark = t
 				}
@@ -133,7 +135,7 @@ func (u *UnionNode) emitReady(drain bool) error {
 			var j int
 			l := len(values)
 			for j = 0; j < l; j++ {
-				if !values[j].PointTime().After(mark) {
+				if !values[j].Time().After(mark) {
 					err := u.emit(values[j])
 					if err != nil {
 						return err
@@ -151,32 +153,8 @@ func (u *UnionNode) emitReady(drain bool) error {
 	return nil
 }
 
-func (u *UnionNode) emit(v models.PointInterface) error {
+func (u *UnionNode) emit(m edge.Message) error {
 	u.timer.Pause()
 	defer u.timer.Resume()
-	switch u.Provides() {
-	case pipeline.StreamEdge:
-		p := v.(models.Point)
-		if u.rename != "" {
-			p.Name = u.rename
-		}
-		for _, child := range u.outs {
-			err := child.CollectPoint(p)
-			if err != nil {
-				return err
-			}
-		}
-	case pipeline.BatchEdge:
-		b := v.(models.Batch)
-		if u.rename != "" {
-			b.Name = u.rename
-		}
-		for _, child := range u.outs {
-			err := child.CollectBatch(b)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return edge.Forward(u.outs, m)
 }

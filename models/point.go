@@ -43,6 +43,18 @@ type Dimensions struct {
 	TagNames []string
 }
 
+func (d Dimensions) Equal(o Dimensions) bool {
+	if d.ByName != o.ByName || len(d.TagNames) != len(o.TagNames) {
+		return false
+	}
+	for i := range d.TagNames {
+		if d.TagNames[i] != o.TagNames[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // Represents a single data point
 type Point struct {
 	Name            string

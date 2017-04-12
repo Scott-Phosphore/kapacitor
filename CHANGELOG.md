@@ -8,6 +8,7 @@
 - [#1436](https://github.com/influxdata/kapacitor/issues/1436): Add linear fill support for QueryNode.
 - [#1345](https://github.com/influxdata/kapacitor/issues/1345): Add MQTT Alert Handler
 - [#1390](https://github.com/influxdata/kapacitor/issues/1390): Add built in functions to convert timestamps to integers
+- [#1425](https://github.com/influxdata/kapacitor/pull/1425): BREAKING: Combine and Flatten nodes previously erroneously operated across batch boundaries, this has been fixed.
 
 ### Bugfixes
 

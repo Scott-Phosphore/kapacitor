@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/influxdata/kapacitor/bufpool"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
 	"github.com/influxdata/kapacitor/services/httppost"
@@ -51,39 +52,64 @@ func newHTTPPostNode(et *ExecutingTask, n *pipeline.HTTPPostNode, l *log.Logger)
 }
 
 func (h *HTTPPostNode) runPost([]byte) error {
-	switch h.Wants() {
-	case pipeline.StreamEdge:
-		for p, ok := h.ins[0].NextPoint(); ok; p, ok = h.ins[0].NextPoint() {
-			h.timer.Start()
-			row := models.PointToRow(p)
-			h.postRow(p.Group, row)
-			h.timer.Stop()
-			for _, child := range h.outs {
-				err := child.CollectPoint(p)
-				if err != nil {
-					return err
-				}
-			}
-		}
-	case pipeline.BatchEdge:
-		for b, ok := h.ins[0].NextBatch(); ok; b, ok = h.ins[0].NextBatch() {
-			h.timer.Start()
-			row := models.BatchToRow(b)
-			h.postRow(b.Group, row)
-			h.timer.Stop()
-			for _, child := range h.outs {
-				err := child.CollectBatch(b)
-				if err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return nil
+	consumer := edge.NewGroupedConsumer(
+		h.ins[0],
+		h,
+	)
+	h.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+
+	return consumer.Consume()
+
 }
 
-// Update the result structure with a row.
-func (h *HTTPPostNode) postRow(group models.GroupID, row *models.Row) {
+func (h *HTTPPostNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+	g := &httpPostGroup{
+		n:      h,
+		buffer: new(edge.BatchBuffer),
+	}
+	return edge.NewReceiverFromForwardReceiverWithStats(
+		h.outs,
+		edge.NewTimedForwardReceiver(h.timer, g),
+	), nil
+}
+
+func (h *HTTPPostNode) DeleteGroup(group models.GroupID) {
+}
+
+type httpPostGroup struct {
+	n      *HTTPPostNode
+	buffer *edge.BatchBuffer
+}
+
+func (g *httpPostGroup) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+	return nil, g.buffer.BeginBatch(begin)
+}
+
+func (g *httpPostGroup) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+	return nil, g.buffer.BatchPoint(bp)
+}
+
+func (g *httpPostGroup) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+	return g.BufferedBatch(g.buffer.BufferedBatchMessage(end))
+}
+
+func (g *httpPostGroup) BufferedBatch(batch edge.BufferedBatchMessage) (edge.Message, error) {
+	row := batch.ToRow()
+	g.n.postRow(row)
+	return batch, nil
+}
+
+func (g *httpPostGroup) Point(p edge.PointMessage) (edge.Message, error) {
+	row := p.ToRow()
+	g.n.postRow(row)
+	return p, nil
+}
+
+func (g *httpPostGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+	return b, nil
+}
+
+func (h *HTTPPostNode) postRow(row *models.Row) {
 	result := new(models.Result)
 	result.Series = []*models.Row{row}
 
@@ -113,5 +139,4 @@ func (h *HTTPPostNode) postRow(group models.GroupID, row *models.Row) {
 		return
 	}
 	resp.Body.Close()
-
 }

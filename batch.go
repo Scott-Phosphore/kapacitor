@@ -9,9 +9,9 @@ import (
 
 	"github.com/gorhill/cronexpr"
 	"github.com/influxdata/influxdb/influxql"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/expvar"
 	"github.com/influxdata/kapacitor/influxdb"
-	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
 	"github.com/pkg/errors"
 )
@@ -49,7 +49,7 @@ func (s *BatchNode) linkChild(c Node) error {
 	return nil
 }
 
-func (s *BatchNode) addParentEdge(in *Edge) {
+func (s *BatchNode) addParentEdge(in edge.StatsEdge) {
 	// Pass edges down to children
 	s.children[s.idx].addParentEdge(in)
 	s.idx++
@@ -221,7 +221,7 @@ func (b *QueryNode) Start() {
 	defer b.queryMu.Unlock()
 	b.queryErr = make(chan error, 1)
 	go func() {
-		b.queryErr <- b.doQuery()
+		b.queryErr <- b.doQuery(b.ins[0])
 	}()
 }
 
@@ -264,8 +264,8 @@ func (b *QueryNode) Queries(start, stop time.Time) ([]*Query, error) {
 }
 
 // Query InfluxDB and collect batches on batch collector.
-func (b *QueryNode) doQuery() error {
-	defer b.ins[0].Close()
+func (b *QueryNode) doQuery(in edge.Edge) error {
+	defer in.Close()
 	b.batchesQueried = &expvar.Int{}
 	b.pointsQueried = &expvar.Int{}
 
@@ -311,7 +311,7 @@ func (b *QueryNode) doQuery() error {
 
 			// Collect batches
 			for _, res := range resp.Results {
-				batches, err := models.ResultToBatches(res, b.byName)
+				batches, err := edge.ResultToBufferedBatches(res, b.byName)
 				if err != nil {
 					b.incrementErrorCount()
 					b.logger.Println("E! failed to understand query result:", err)
@@ -319,14 +319,15 @@ func (b *QueryNode) doQuery() error {
 				}
 				for _, bch := range batches {
 					// Set stop time based off query bounds
-					if bch.TMax.IsZero() || !b.query.IsGroupedByTime() {
-						bch.TMax = stop
+					if bch.Begin().Time().IsZero() || !b.query.IsGroupedByTime() {
+						bch.Begin().SetTime(stop)
 					}
+
 					b.batchesQueried.Add(1)
-					b.pointsQueried.Add(int64(len(bch.Points)))
+					b.pointsQueried.Add(int64(len(bch.Points())))
+
 					b.timer.Pause()
-					err := b.ins[0].CollectBatch(bch)
-					if err != nil {
+					if err := in.Collect(bch); err != nil {
 						return err
 					}
 					b.timer.Resume()
@@ -346,9 +347,9 @@ func (b *QueryNode) runBatch([]byte) error {
 				errC <- fmt.Errorf("%v", err)
 			}
 		}()
-		for bt, ok := b.ins[0].NextBatch(); ok; bt, ok = b.ins[0].NextBatch() {
+		for bt, ok := b.ins[0].Emit(); ok; bt, ok = b.ins[0].Emit() {
 			for _, child := range b.outs {
-				err := child.CollectBatch(bt)
+				err := child.Collect(bt)
 				if err != nil {
 					errC <- err
 					return

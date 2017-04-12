@@ -3,9 +3,11 @@ package kapacitor
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"sync"
 
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/expvar"
 	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
@@ -21,34 +23,19 @@ const (
 
 var ErrAborted = errors.New("edged aborted")
 
-type StreamCollector interface {
-	CollectPoint(models.Point) error
-	Close()
-}
-
-type BatchCollector interface {
-	CollectBatch(models.Batch) error
-	Close()
-}
-
 type Edge struct {
+	edge.StatsEdge
+
 	mu     sync.Mutex
 	closed bool
 
-	stream chan models.Point
-	batch  chan models.Batch
-
-	logger     *log.Logger
-	aborted    chan struct{}
-	statsKey   string
-	collected  *expvar.Int
-	emitted    *expvar.Int
-	statMap    *expvar.Map
-	groupMu    sync.RWMutex
-	groupStats map[models.GroupID]*edgeStat
+	statsKey string
+	statMap  *expvar.Map
+	logger   *log.Logger
 }
 
-func newEdge(taskName, parentName, childName string, t pipeline.EdgeType, size int, logService LogService) *Edge {
+func newEdge(taskName, parentName, childName string, t pipeline.EdgeType, size int, logService LogService) edge.StatsEdge {
+	e := edge.NewStatsEdge(edge.NewChannelEdge(t, defaultEdgeBufferSize))
 	tags := map[string]string{
 		"task":   taskName,
 		"parent": parentName,
@@ -56,184 +43,202 @@ func newEdge(taskName, parentName, childName string, t pipeline.EdgeType, size i
 		"type":   t.String(),
 	}
 	key, sm := vars.NewStatistic("edges", tags)
-	collected := &expvar.Int{}
-	emitted := &expvar.Int{}
-	sm.Set(statCollected, collected)
-	sm.Set(statEmitted, emitted)
-	e := &Edge{
-		statsKey:   key,
-		statMap:    sm,
-		collected:  collected,
-		emitted:    emitted,
-		aborted:    make(chan struct{}),
-		groupStats: make(map[models.GroupID]*edgeStat),
-	}
+	sm.Set(statCollected, e.CollectedVar())
+	sm.Set(statEmitted, e.EmittedVar())
 	name := fmt.Sprintf("%s|%s->%s", taskName, parentName, childName)
-	e.logger = logService.NewLogger(fmt.Sprintf("[edge:%s] ", name), log.LstdFlags)
-	switch t {
-	case pipeline.StreamEdge:
-		e.stream = make(chan models.Point, size)
-	case pipeline.BatchEdge:
-		e.batch = make(chan models.Batch, size)
-	}
-	return e
-}
-
-func (e *Edge) emittedCount() int64 {
-	return e.emitted.IntValue()
-}
-
-func (e *Edge) collectedCount() int64 {
-	return e.collected.IntValue()
-}
-
-// Stats for a given group for this edge
-type edgeStat struct {
-	collected int64
-	emitted   int64
-	tags      models.Tags
-	dims      models.Dimensions
-}
-
-// Get a snapshot of the current group statistics for this edge
-func (e *Edge) readGroupStats(f func(group models.GroupID, collected, emitted int64, tags models.Tags, dims models.Dimensions)) {
-	e.groupMu.RLock()
-	defer e.groupMu.RUnlock()
-	for group, stats := range e.groupStats {
-		f(
-			group,
-			stats.collected,
-			stats.emitted,
-			stats.tags,
-			stats.dims,
-		)
+	return &Edge{
+		StatsEdge: e,
+		statsKey:  key,
+		statMap:   sm,
+		logger:    logService.NewLogger(fmt.Sprintf("[edge:%s] ", name), log.LstdFlags),
 	}
 }
 
-// Close the edge, this can only be called after all
-// collect calls to the edge have finished.
-// Can be called multiple times.
-func (e *Edge) Close() {
+func (e *Edge) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return
+		return nil
 	}
 	e.closed = true
-	e.logger.Printf(
-		"D! closing c: %d e: %d\n",
-		e.collected.IntValue(),
-		e.emitted.IntValue(),
-	)
-	if e.stream != nil {
-		close(e.stream)
-	}
-	if e.batch != nil {
-		close(e.batch)
-	}
 	vars.DeleteStatistic(e.statsKey)
+	e.logger.Printf("D! closing c: %d e: %d",
+		e.Collected(),
+		e.Emitted(),
+	)
+	return e.StatsEdge.Close()
+}
+
+type LegacyEdge struct {
+	e edge.Edge
+
+	// collect serializes all calls to collect messages.
+	collect sync.Mutex
+	// next serializes all calls to get next messages.
+	next sync.Mutex
+
+	logger *log.Logger
+}
+
+func NewLegacyEdge(e edge.Edge) *LegacyEdge {
+	var logger *log.Logger
+	if el, ok := e.(*Edge); ok {
+		logger = el.logger
+	} else {
+		// This should not be a possible branch,
+		// as all edges passed to NewLegacyEdge are expected to be *Edge.
+		logger = log.New(ioutil.Discard, "", 0)
+	}
+	return &LegacyEdge{
+		e:      e,
+		logger: logger,
+	}
+}
+
+func NewLegacyEdges(edges []edge.StatsEdge) []*LegacyEdge {
+	legacyEdges := make([]*LegacyEdge, len(edges))
+	for i := range edges {
+		legacyEdges[i] = NewLegacyEdge(edges[i])
+	}
+	return legacyEdges
+}
+
+func (e *LegacyEdge) Close() error {
+	return e.e.Close()
 }
 
 // Abort all next and collect calls.
 // Items in flight may or may not be processed.
-func (e *Edge) Abort() {
-	close(e.aborted)
-	e.logger.Printf(
-		"I! aborting c: %d e: %d\n",
-		e.collected.IntValue(),
-		e.emitted.IntValue(),
-	)
+func (e *LegacyEdge) Abort() {
+	e.e.Abort()
 }
 
-func (e *Edge) Next() (p models.PointInterface, ok bool) {
-	if e.stream != nil {
+func (e *LegacyEdge) Next() (p models.PointInterface, ok bool) {
+	if e.e.Type() == pipeline.StreamEdge {
 		return e.NextPoint()
 	}
 	return e.NextBatch()
 }
 
-func (e *Edge) NextPoint() (p models.Point, ok bool) {
-	select {
-	case <-e.aborted:
-	case p, ok = <-e.stream:
-		if ok {
-			e.emitted.Add(1)
-			e.incEmitted(p.Group, p.Tags, p.Dimensions, 1)
+func (e *LegacyEdge) NextPoint() (models.Point, bool) {
+	e.next.Lock()
+	defer e.next.Unlock()
+	for m, ok := e.e.Emit(); ok; m, ok = e.e.Emit() {
+		if t := m.Type(); t != edge.Point {
+			e.logger.Printf("E! legacy edge expected message of type edge.PointMessage, got message of type %v", t)
+			continue
+		}
+		p, ok := m.(edge.PointMessage)
+		if !ok {
+			e.logger.Printf("E! unexpected message type %T", m)
+			continue
+		}
+		return models.Point{
+			Name:            p.Name(),
+			Database:        p.Database(),
+			RetentionPolicy: p.RetentionPolicy(),
+			Group:           p.GroupID(),
+			Dimensions:      p.Dimensions(),
+			Tags:            p.Tags(),
+			Fields:          p.Fields(),
+			Time:            p.Time(),
+		}, true
+	}
+	return models.Point{}, false
+}
+
+func (e *LegacyEdge) NextBatch() (models.Batch, bool) {
+	e.next.Lock()
+	defer e.next.Unlock()
+	b := models.Batch{}
+
+BEGIN:
+	for m, ok := e.e.Emit(); ok; m, ok = e.e.Emit() {
+		switch msg := m.(type) {
+		case edge.BeginBatchMessage:
+			b.Name = msg.Name()
+			b.Group = msg.GroupID()
+			b.Tags = msg.Tags()
+			b.ByName = msg.Dimensions().ByName
+			b.TMax = msg.Time()
+			b.Points = make([]models.BatchPoint, 0, msg.SizeHint())
+			break BEGIN
+		case edge.BufferedBatchMessage:
+			begin := msg.Begin()
+			b.Name = begin.Name()
+			b.Group = begin.GroupID()
+			b.Tags = begin.Tags()
+			b.ByName = begin.Dimensions().ByName
+			b.TMax = msg.Begin().Time()
+			points := msg.Points()
+			b.Points = make([]models.BatchPoint, len(points))
+			for i, bp := range points {
+				b.Points[i] = models.BatchPoint{
+					Time:   bp.Time(),
+					Fields: bp.Fields(),
+					Tags:   bp.Tags(),
+				}
+			}
+			return b, true
+		default:
+			e.logger.Printf("E! legacy edge expected message of type edge.BatchBegin or edge.BufferedBatch, got message of type %v", m.Type())
+			continue BEGIN
 		}
 	}
-	return
-}
-
-func (e *Edge) NextBatch() (b models.Batch, ok bool) {
-	select {
-	case <-e.aborted:
-	case b, ok = <-e.batch:
-		if ok {
-			e.emitted.Add(1)
-			e.incEmitted(b.Group, b.Tags, b.PointDimensions(), int64(len(b.Points)))
+	finished := false
+MESSAGES:
+	for m, ok := e.e.Emit(); ok; m, ok = e.e.Emit() {
+		switch msg := m.(type) {
+		case edge.EndBatchMessage:
+			finished = true
+			break MESSAGES
+		case edge.BatchPointMessage:
+			b.Points = append(b.Points, models.BatchPoint{
+				Time:   msg.Time(),
+				Fields: msg.Fields(),
+				Tags:   msg.Tags(),
+			})
+		default:
+			e.logger.Printf("E! legacy edge expected message of type edge.EndBatch or edge.BatchPoint, got message of type %v", m.Type())
+			continue MESSAGES
 		}
 	}
-	return
+	return b, finished
 }
 
-func (e *Edge) CollectPoint(p models.Point) error {
-	e.collected.Add(1)
-	e.incCollected(p.Group, p.Tags, p.Dimensions, 1)
-	select {
-	case <-e.aborted:
-		return ErrAborted
-	case e.stream <- p:
-		return nil
-	}
+func (e *LegacyEdge) CollectPoint(p models.Point) error {
+	e.collect.Lock()
+	defer e.collect.Unlock()
+	pm := edge.NewPointMessage(
+		p.Name,
+		p.Database,
+		p.RetentionPolicy,
+		p.Dimensions,
+		p.Fields,
+		p.Tags,
+		p.Time,
+	)
+	return e.e.Collect(pm)
 }
 
-func (e *Edge) CollectBatch(b models.Batch) error {
-	e.collected.Add(1)
-	e.incCollected(b.Group, b.Tags, b.PointDimensions(), int64(len(b.Points)))
-	select {
-	case <-e.aborted:
-		return ErrAborted
-	case e.batch <- b:
-		return nil
+func (e *LegacyEdge) CollectBatch(b models.Batch) error {
+	e.collect.Lock()
+	defer e.collect.Unlock()
+	begin := edge.NewBeginBatchMessage(
+		b.Name,
+		b.Tags,
+		b.ByName,
+		b.TMax,
+		len(b.Points),
+	)
+	points := make([]edge.BatchPointMessage, begin.SizeHint())
+	for i, bp := range b.Points {
+		points[i] = edge.NewBatchPointMessage(
+			bp.Fields,
+			bp.Tags,
+			bp.Time,
+		)
 	}
-}
-
-// Increment the emitted count of the group for this edge.
-func (e *Edge) incEmitted(group models.GroupID, tags models.Tags, dims models.Dimensions, count int64) {
-	// we are "manually" calling Unlock() and not using defer, because this method is called
-	// in hot locations (NextPoint/CollectPoint) and defer have some performance penalty
-	e.groupMu.Lock()
-
-	if stats, ok := e.groupStats[group]; ok {
-		stats.emitted += count
-		e.groupMu.Unlock()
-	} else {
-		stats = &edgeStat{
-			emitted: count,
-			tags:    tags,
-			dims:    dims,
-		}
-		e.groupStats[group] = stats
-		e.groupMu.Unlock()
-	}
-}
-
-// Increment the collected count of the group for this edge.
-func (e *Edge) incCollected(group models.GroupID, tags models.Tags, dims models.Dimensions, count int64) {
-	// we are "manually" calling Unlock() and not using defer, because this method is called
-	// in hot locations (NextPoint/CollectPoint) and defer have some performance penalty
-	e.groupMu.Lock()
-
-	if stats, ok := e.groupStats[group]; ok {
-		stats.collected += count
-		e.groupMu.Unlock()
-	} else {
-		stats = &edgeStat{
-			collected: count,
-			tags:      tags,
-			dims:      dims,
-		}
-		e.groupStats[group] = stats
-		e.groupMu.Unlock()
-	}
+	end := edge.NewEndBatchMessage()
+	return e.e.Collect(edge.NewBufferedBatchMessage(begin, points, end))
 }

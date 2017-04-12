@@ -11,7 +11,7 @@ import (
 
 	"github.com/cenkalti/backoff"
 	"github.com/influxdata/kapacitor/command"
-	"github.com/influxdata/kapacitor/models"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/pipeline"
 	"github.com/influxdata/kapacitor/udf"
 	"github.com/influxdata/kapacitor/udf/agent"
@@ -75,44 +75,26 @@ func (u *UDFNode) runUDF(snapshot []byte) (err error) {
 		}
 		u.stopped = true
 	}()
-	err = u.udf.Open()
-	if err != nil {
-		return
+
+	if err := u.udf.Open(); err != nil {
+		return err
 	}
-	err = u.udf.Init(u.u.Options)
-	if err != nil {
-		return
+	if err := u.udf.Init(u.u.Options); err != nil {
+		return err
 	}
 	if snapshot != nil {
-		err = u.udf.Restore(snapshot)
-		if err != nil {
-			return
+		if err := u.udf.Restore(snapshot); err != nil {
+			return err
 		}
 	}
+
 	forwardErr := make(chan error, 1)
 	go func() {
-		switch u.Provides() {
-		case pipeline.StreamEdge:
-			pointOut := u.udf.PointOut()
-			for p := range pointOut {
-				for _, out := range u.outs {
-					err := out.CollectPoint(p)
-					if err != nil {
-						forwardErr <- err
-						return
-					}
-				}
-			}
-		case pipeline.BatchEdge:
-			batchOut := u.udf.BatchOut()
-			for b := range batchOut {
-				for _, out := range u.outs {
-					err := out.CollectBatch(b)
-					if err != nil {
-						forwardErr <- err
-						return
-					}
-				}
+		out := u.udf.Out()
+		for m := range out {
+			if err := edge.Forward(u.outs, m); err != nil {
+				forwardErr <- err
+				return
 			}
 		}
 		forwardErr <- nil
@@ -123,42 +105,28 @@ func (u *UDFNode) runUDF(snapshot []byte) (err error) {
 	u.wg.Add(1)
 	go func() {
 		defer u.wg.Done()
-		switch u.Wants() {
-		case pipeline.StreamEdge:
-			pointIn := u.udf.PointIn()
-			for p, ok := u.ins[0].NextPoint(); ok; p, ok = u.ins[0].NextPoint() {
-				u.timer.Start()
-				select {
-				case pointIn <- p:
-				case <-u.aborted:
-					return
-				}
-				u.timer.Stop()
+		in := u.udf.In()
+		for m, ok := u.ins[0].Emit(); ok; m, ok = u.ins[0].Emit() {
+			u.timer.Start()
+			select {
+			case in <- m:
+			case <-u.aborted:
+				return
 			}
-		case pipeline.BatchEdge:
-			batchIn := u.udf.BatchIn()
-			for b, ok := u.ins[0].NextBatch(); ok; b, ok = u.ins[0].NextBatch() {
-				u.timer.Start()
-				select {
-				case batchIn <- b:
-				case <-u.aborted:
-					return
-				}
-				u.timer.Stop()
-			}
+			u.timer.Stop()
 		}
 	}()
+
 	// wait till we are done writing
 	u.wg.Wait()
 
 	// Close the udf
-	err = u.udf.Close()
-	if err != nil {
-		return
+	if err := u.udf.Close(); err != nil {
+		return err
 	}
+
 	// Wait/Return any error from the forwarding goroutine
-	err = <-forwardErr
-	return
+	return <-forwardErr
 }
 
 func (u *UDFNode) abortedCallback() {
@@ -296,10 +264,8 @@ func (p *UDFProcess) Abort(err error)                    { p.server.Abort(err) }
 func (p *UDFProcess) Init(options []*agent.Option) error { return p.server.Init(options) }
 func (p *UDFProcess) Snapshot() ([]byte, error)          { return p.server.Snapshot() }
 func (p *UDFProcess) Restore(snapshot []byte) error      { return p.server.Restore(snapshot) }
-func (p *UDFProcess) PointIn() chan<- models.Point       { return p.server.PointIn() }
-func (p *UDFProcess) BatchIn() chan<- models.Batch       { return p.server.BatchIn() }
-func (p *UDFProcess) PointOut() <-chan models.Point      { return p.server.PointOut() }
-func (p *UDFProcess) BatchOut() <-chan models.Batch      { return p.server.BatchOut() }
+func (p *UDFProcess) In() chan<- edge.Message            { return p.server.In() }
+func (p *UDFProcess) Out() <-chan edge.Message           { return p.server.Out() }
 func (p *UDFProcess) Info() (udf.Info, error)            { return p.server.Info() }
 
 type UDFSocket struct {
@@ -368,10 +334,8 @@ func (s *UDFSocket) Abort(err error)                    { s.server.Abort(err) }
 func (s *UDFSocket) Init(options []*agent.Option) error { return s.server.Init(options) }
 func (s *UDFSocket) Snapshot() ([]byte, error)          { return s.server.Snapshot() }
 func (s *UDFSocket) Restore(snapshot []byte) error      { return s.server.Restore(snapshot) }
-func (s *UDFSocket) PointIn() chan<- models.Point       { return s.server.PointIn() }
-func (s *UDFSocket) BatchIn() chan<- models.Batch       { return s.server.BatchIn() }
-func (s *UDFSocket) PointOut() <-chan models.Point      { return s.server.PointOut() }
-func (s *UDFSocket) BatchOut() <-chan models.Batch      { return s.server.BatchOut() }
+func (s *UDFSocket) In() chan<- edge.Message            { return s.server.In() }
+func (s *UDFSocket) Out() <-chan edge.Message           { return s.server.Out() }
 func (s *UDFSocket) Info() (udf.Info, error)            { return s.server.Info() }
 
 type socket struct {

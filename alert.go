@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/influxdata/kapacitor/alert"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/expvar"
 	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
@@ -56,12 +57,9 @@ type AlertNode struct {
 	handlers    []alert.Handler
 	levels      []stateful.Expression
 	scopePools  []stateful.ScopePool
-	states      map[models.GroupID]*alertState
 	idTmpl      *text.Template
 	messageTmpl *text.Template
 	detailsTmpl *html.Template
-
-	statesMu sync.RWMutex
 
 	alertsTriggered *expvar.Int
 	oksTriggered    *expvar.Int
@@ -451,7 +449,6 @@ func newAlertNode(et *ExecutingTask, n *pipeline.AlertNode, l *log.Logger) (an *
 	if n.History < 2 {
 		n.History = 2
 	}
-	an.states = make(map[models.GroupID]*alertState)
 
 	// Configure flapping
 	if n.UseFlapping {
@@ -464,14 +461,6 @@ func newAlertNode(et *ExecutingTask, n *pipeline.AlertNode, l *log.Logger) (an *
 }
 
 func (a *AlertNode) runAlert([]byte) error {
-	valueF := func() int64 {
-		a.statesMu.RLock()
-		l := len(a.states)
-		a.statesMu.RUnlock()
-		return int64(l)
-	}
-	a.statMap.Set(statCardinalityGauge, expvar.NewIntFuncGauge(valueF))
-
 	// Register delete hook
 	if a.hasAnonTopic() {
 		a.et.tm.registerDeleteHookForTask(a.et.Task.ID, deleteAlertHook(a.anonTopic))
@@ -503,223 +492,20 @@ func (a *AlertNode) runAlert([]byte) error {
 	a.eventsDropped = &expvar.Int{}
 	a.statMap.Set(statsCritsTriggered, a.critsTriggered)
 
-	switch a.Wants() {
-	case pipeline.StreamEdge:
-		for p, ok := a.ins[0].NextPoint(); ok; p, ok = a.ins[0].NextPoint() {
-			a.timer.Start()
-			id, err := a.renderID(p.Name, p.Group, p.Tags)
-			if err != nil {
-				return err
-			}
-			var currentLevel alert.Level
-			if state, ok := a.getAlertState(p.Group); ok {
-				currentLevel = state.currentLevel()
-			} else {
-				// Check for previous state
-				var triggered time.Time
-				currentLevel, triggered = a.restoreEventState(id)
-				if currentLevel != alert.OK {
-					// Update the state with the restored state
-					state = a.updateState(p.Time, currentLevel, p.Group)
-					state.triggered(triggered)
-				}
-			}
-			l := a.determineLevel(p.Time, p.Fields, p.Tags, currentLevel)
-			state := a.updateState(p.Time, l, p.Group)
-			if (a.a.UseFlapping && state.flapping) || (a.a.IsStateChangesOnly && !state.changed && !state.expired) {
-				a.timer.Stop()
-				continue
-			}
-			// send alert if we are not OK or we are OK and state changed (i.e recovery)
-			if l != alert.OK || state.changed {
-				batch := models.Batch{
-					Name:   p.Name,
-					Group:  p.Group,
-					ByName: p.Dimensions.ByName,
-					Tags:   p.Tags,
-					Points: []models.BatchPoint{models.BatchPointFromPoint(p)},
-				}
-				state.triggered(p.Time)
-				// Suppress the recovery event.
-				if a.a.NoRecoveriesFlag && l == alert.OK {
-					a.timer.Stop()
-					continue
-				}
-				duration := state.duration()
-				event, err := a.event(id, p.Name, p.Group, p.Tags, p.Fields, l, p.Time, duration, batch)
-				if err != nil {
-					return err
-				}
-				a.handleEvent(event)
-				if a.a.LevelTag != "" || a.a.IdTag != "" {
-					p.Tags = p.Tags.Copy()
-					if a.a.LevelTag != "" {
-						p.Tags[a.a.LevelTag] = l.String()
-					}
-					if a.a.IdTag != "" {
-						p.Tags[a.a.IdTag] = event.State.ID
-					}
-				}
-				if a.a.LevelField != "" || a.a.IdField != "" || a.a.DurationField != "" || a.a.MessageField != "" {
-					p.Fields = p.Fields.Copy()
-					if a.a.LevelField != "" {
-						p.Fields[a.a.LevelField] = l.String()
-					}
-					if a.a.MessageField != "" {
-						p.Fields[a.a.MessageField] = event.State.Message
-					}
-					if a.a.IdField != "" {
-						p.Fields[a.a.IdField] = event.State.ID
-					}
-					if a.a.DurationField != "" {
-						p.Fields[a.a.DurationField] = int64(duration)
-					}
-				}
-				a.timer.Pause()
-				for _, child := range a.outs {
-					err := child.CollectPoint(p)
-					if err != nil {
-						return err
-					}
-				}
-				a.timer.Resume()
-			}
-			a.timer.Stop()
-		}
-	case pipeline.BatchEdge:
-		for b, ok := a.ins[0].NextBatch(); ok; b, ok = a.ins[0].NextBatch() {
-			a.timer.Start()
-			id, err := a.renderID(b.Name, b.Group, b.Tags)
-			if err != nil {
-				return err
-			}
-			if len(b.Points) == 0 {
-				a.timer.Stop()
-				continue
-			}
-			// Keep track of lowest level for any point
-			lowestLevel := alert.Critical
-			// Keep track of highest level and point
-			highestLevel := alert.OK
-			var highestPoint *models.BatchPoint
+	// Setup consumer
+	consumer := edge.NewGroupedConsumer(
+		a.ins[0],
+		a,
+	)
+	a.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 
-			var currentLevel alert.Level
-			if state, ok := a.getAlertState(b.Group); ok {
-				currentLevel = state.currentLevel()
-			} else {
-				// Check for previous state
-				var triggered time.Time
-				currentLevel, triggered = a.restoreEventState(id)
-				if currentLevel != alert.OK {
-					// Update the state with the restored state
-					state = a.updateState(b.TMax, currentLevel, b.Group)
-					state.triggered(triggered)
-				}
-			}
-			for i, p := range b.Points {
-				l := a.determineLevel(p.Time, p.Fields, p.Tags, currentLevel)
-				if l < lowestLevel {
-					lowestLevel = l
-				}
-				if l > highestLevel || highestPoint == nil {
-					highestLevel = l
-					highestPoint = &b.Points[i]
-				}
-			}
-
-			// Default the determined level to lowest.
-			l := lowestLevel
-			// Update determined level to highest if we don't care about all
-			if !a.a.AllFlag {
-				l = highestLevel
-			}
-			// Create alert Data
-			t := highestPoint.Time
-			if a.a.AllFlag || l == alert.OK {
-				t = b.TMax
-			}
-
-			// Update state
-			state := a.updateState(t, l, b.Group)
-			// Trigger alert if:
-			//  l == OK and state.changed (aka recovery)
-			//    OR
-			//  l != OK and flapping/statechanges checkout
-			if state.changed && l == alert.OK ||
-				(l != alert.OK &&
-					!((a.a.UseFlapping && state.flapping) ||
-						(a.a.IsStateChangesOnly && !state.changed && !state.expired))) {
-				state.triggered(t)
-				// Suppress the recovery event.
-				if a.a.NoRecoveriesFlag && l == alert.OK {
-					a.timer.Stop()
-					continue
-				}
-
-				duration := state.duration()
-				event, err := a.event(id, b.Name, b.Group, b.Tags, highestPoint.Fields, l, t, duration, b)
-				if err != nil {
-					return err
-				}
-				a.handleEvent(event)
-				// Update tags or fields for Level property
-				if a.a.LevelTag != "" ||
-					a.a.LevelField != "" ||
-					a.a.IdTag != "" ||
-					a.a.IdField != "" ||
-					a.a.DurationField != "" ||
-					a.a.MessageField != "" {
-					b.Points = b.ShallowCopyPoints()
-					for i := range b.Points {
-						if a.a.LevelTag != "" || a.a.IdTag != "" {
-							b.Points[i].Tags = b.Points[i].Tags.Copy()
-							if a.a.LevelTag != "" {
-								b.Points[i].Tags[a.a.LevelTag] = l.String()
-							}
-							if a.a.IdTag != "" {
-								b.Points[i].Tags[a.a.IdTag] = event.State.ID
-							}
-						}
-						if a.a.LevelField != "" || a.a.IdField != "" || a.a.DurationField != "" || a.a.MessageField != "" {
-							b.Points[i].Fields = b.Points[i].Fields.Copy()
-							if a.a.LevelField != "" {
-								b.Points[i].Fields[a.a.LevelField] = l.String()
-							}
-							if a.a.MessageField != "" {
-								b.Points[i].Fields[a.a.MessageField] = event.State.Message
-							}
-							if a.a.IdField != "" {
-								b.Points[i].Fields[a.a.IdField] = event.State.ID
-							}
-							if a.a.DurationField != "" {
-								b.Points[i].Fields[a.a.DurationField] = int64(duration)
-							}
-						}
-					}
-					if a.a.LevelTag != "" || a.a.IdTag != "" {
-						b.Tags = b.Tags.Copy()
-						if a.a.LevelTag != "" {
-							b.Tags[a.a.LevelTag] = l.String()
-						}
-						if a.a.IdTag != "" {
-							b.Tags[a.a.IdTag] = event.State.ID
-						}
-					}
-				}
-				a.timer.Pause()
-				for _, child := range a.outs {
-					err := child.CollectBatch(b)
-					if err != nil {
-						return err
-					}
-				}
-				a.timer.Resume()
-			}
-			a.timer.Stop()
-		}
+	if err := consumer.Consume(); err != nil {
+		return err
 	}
+
 	// Close the anonymous topic.
 	a.et.tm.AlertService.CloseTopic(a.anonTopic)
+
 	// Deregister Handlers on topic
 	for _, h := range a.handlers {
 		a.et.tm.AlertService.DeregisterAnonHandler(a.anonTopic, h)
@@ -727,20 +513,45 @@ func (a *AlertNode) runAlert([]byte) error {
 	return nil
 }
 
-func deleteAlertHook(anonTopic string) deleteHook {
-	return func(tm *TaskMaster) {
-		tm.AlertService.DeleteTopic(anonTopic)
+func (a *AlertNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+	id, err := a.renderID(first.Name(), first.GroupID(), first.Tags())
+	if err != nil {
+		return nil, err
+	}
+	t := first.Time()
+
+	state := a.restoreEventState(id, t)
+
+	return edge.NewReceiverFromForwardReceiverWithStats(
+		a.outs,
+		edge.NewTimedForwardReceiver(
+			a.timer,
+			state,
+		),
+	), nil
+}
+
+func (a *AlertNode) restoreEventState(id string, t time.Time) *alertState {
+	state := a.newAlertState()
+	currentLevel, triggered := a.restoreEvent(id)
+	if currentLevel != alert.OK {
+		// Add initial event
+		state.addEvent(t, currentLevel)
+		// Record triggered time
+		state.triggered(triggered)
+	}
+	return state
+}
+
+func (a *AlertNode) newAlertState() *alertState {
+	return &alertState{
+		history: make([]alert.Level, a.a.History),
+		n:       a,
+		buffer:  new(edge.BatchBuffer),
 	}
 }
 
-func (a *AlertNode) hasAnonTopic() bool {
-	return len(a.handlers) > 0
-}
-func (a *AlertNode) hasTopic() bool {
-	return a.topic != ""
-}
-
-func (a *AlertNode) restoreEventState(id string) (alert.Level, time.Time) {
+func (a *AlertNode) restoreEvent(id string) (alert.Level, time.Time) {
 	var topicState, anonTopicState alert.EventState
 	var anonFound, topicFound bool
 	// Check for previous state on anonTopic
@@ -784,6 +595,23 @@ func (a *AlertNode) restoreEventState(id string) (alert.Level, time.Time) {
 	return topicState.Level, topicState.Time
 }
 
+func (a *AlertNode) DeleteGroup(group models.GroupID) {
+	// Nothing to do
+}
+
+func deleteAlertHook(anonTopic string) deleteHook {
+	return func(tm *TaskMaster) {
+		tm.AlertService.DeleteTopic(anonTopic)
+	}
+}
+
+func (a *AlertNode) hasAnonTopic() bool {
+	return len(a.handlers) > 0
+}
+func (a *AlertNode) hasTopic() bool {
+	return a.topic != ""
+}
+
 func (a *AlertNode) handleEvent(event alert.Event) {
 	a.alertsTriggered.Add(1)
 	switch event.State.Level {
@@ -821,25 +649,25 @@ func (a *AlertNode) handleEvent(event alert.Event) {
 	}
 }
 
-func (a *AlertNode) determineLevel(now time.Time, fields models.Fields, tags map[string]string, currentLevel alert.Level) alert.Level {
-	if higherLevel, found := a.findFirstMatchLevel(alert.Critical, currentLevel-1, now, fields, tags); found {
+func (a *AlertNode) determineLevel(p edge.FieldsTagsTimeGetter, currentLevel alert.Level) alert.Level {
+	if higherLevel, found := a.findFirstMatchLevel(alert.Critical, currentLevel-1, p); found {
 		return higherLevel
 	}
 	if rse := a.levelResets[currentLevel]; rse != nil {
-		if pass, err := EvalPredicate(rse, a.lrScopePools[currentLevel], now, fields, tags); err != nil {
+		if pass, err := EvalPredicate(rse, a.lrScopePools[currentLevel], p); err != nil {
 			a.incrementErrorCount()
 			a.logger.Printf("E! error evaluating reset expression for current level %v: %s", currentLevel, err)
 		} else if !pass {
 			return currentLevel
 		}
 	}
-	if newLevel, found := a.findFirstMatchLevel(currentLevel, alert.OK, now, fields, tags); found {
+	if newLevel, found := a.findFirstMatchLevel(currentLevel, alert.OK, p); found {
 		return newLevel
 	}
 	return alert.OK
 }
 
-func (a *AlertNode) findFirstMatchLevel(start alert.Level, stop alert.Level, now time.Time, fields models.Fields, tags map[string]string) (alert.Level, bool) {
+func (a *AlertNode) findFirstMatchLevel(start alert.Level, stop alert.Level, p edge.FieldsTagsTimeGetter) (alert.Level, bool) {
 	if stop < alert.OK {
 		stop = alert.OK
 	}
@@ -848,7 +676,7 @@ func (a *AlertNode) findFirstMatchLevel(start alert.Level, stop alert.Level, now
 		if se == nil {
 			continue
 		}
-		if pass, err := EvalPredicate(se, a.scopePools[l], now, fields, tags); err != nil {
+		if pass, err := EvalPredicate(se, a.scopePools[l], p); err != nil {
 			a.incrementErrorCount()
 			a.logger.Printf("E! error evaluating expression for level %v: %s", alert.Level(l), err)
 			continue
@@ -867,7 +695,7 @@ func (a *AlertNode) event(
 	level alert.Level,
 	t time.Time,
 	d time.Duration,
-	b models.Batch,
+	result models.Result,
 ) (alert.Event, error) {
 	msg, details, err := a.renderMessageAndDetails(id, name, t, group, tags, fields, level)
 	if err != nil {
@@ -889,23 +717,216 @@ func (a *AlertNode) event(
 			Group:    string(group),
 			Tags:     tags,
 			Fields:   fields,
-			Result:   models.BatchToResult(b),
+			Result:   result,
 		},
 	}
 	return event, nil
 }
 
 type alertState struct {
-	history  []alert.Level
-	idx      int
+	n *AlertNode
+
+	buffer *edge.BatchBuffer
+
+	history []alert.Level
+	idx     int
+
 	flapping bool
-	changed  bool
+
+	changed bool
 	// Time when first alert was triggered
 	firstTriggered time.Time
 	// Time when last alert was triggered.
 	// Note: Alerts are not triggered for every event.
 	lastTriggered time.Time
 	expired       bool
+}
+
+func (a *alertState) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+	return nil, a.buffer.BeginBatch(begin)
+}
+
+func (a *alertState) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+	return nil, a.buffer.BatchPoint(bp)
+}
+
+func (a *alertState) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+	return a.BufferedBatch(a.buffer.BufferedBatchMessage(end))
+}
+
+func (a *alertState) BufferedBatch(b edge.BufferedBatchMessage) (edge.Message, error) {
+	begin := b.Begin()
+	id, err := a.n.renderID(begin.Name(), begin.GroupID(), begin.Tags())
+	if err != nil {
+		return nil, err
+	}
+	if len(b.Points()) == 0 {
+		return nil, nil
+	}
+	// Keep track of lowest level for any point
+	lowestLevel := alert.Critical
+	// Keep track of highest level and point
+	highestLevel := alert.OK
+	var highestPoint edge.BatchPointMessage
+
+	currentLevel := a.currentLevel()
+	for _, bp := range b.Points() {
+		l := a.n.determineLevel(bp, currentLevel)
+		if l < lowestLevel {
+			lowestLevel = l
+		}
+		if l > highestLevel || highestPoint == nil {
+			highestLevel = l
+			highestPoint = bp
+		}
+	}
+
+	// Default the determined level to lowest.
+	l := lowestLevel
+	// Update determined level to highest if we don't care about all
+	if !a.n.a.AllFlag {
+		l = highestLevel
+	}
+	// Create alert Data
+	t := highestPoint.Time()
+	if a.n.a.AllFlag || l == alert.OK {
+		t = begin.Time()
+	}
+
+	a.addEvent(t, l)
+
+	// Trigger alert only if:
+	//  l == OK and state.changed (aka recovery)
+	//    OR
+	//  l != OK and flapping/statechanges checkout
+	if !(a.changed && l == alert.OK ||
+		(l != alert.OK &&
+			!((a.n.a.UseFlapping && a.flapping) ||
+				(a.n.a.IsStateChangesOnly && !a.changed && !a.expired)))) {
+		return nil, nil
+	}
+
+	a.triggered(t)
+
+	// Suppress the recovery event.
+	if a.n.a.NoRecoveriesFlag && l == alert.OK {
+		return nil, nil
+	}
+
+	duration := a.duration()
+	event, err := a.n.event(id, begin.Name(), begin.GroupID(), begin.Tags(), highestPoint.Fields(), l, t, duration, b.ToResult())
+	if err != nil {
+		return nil, err
+	}
+
+	a.n.handleEvent(event)
+
+	// Update tags or fields with event state
+	if a.n.a.LevelTag != "" ||
+		a.n.a.LevelField != "" ||
+		a.n.a.IdTag != "" ||
+		a.n.a.IdField != "" ||
+		a.n.a.DurationField != "" ||
+		a.n.a.MessageField != "" {
+
+		b = b.ShallowCopy()
+		points := make([]edge.BatchPointMessage, len(b.Points()))
+		for i, bp := range b.Points() {
+			bp = bp.ShallowCopy()
+			a.augmentTagsWithEventState(bp, event.State)
+			a.augmentFieldsWithEventState(bp, event.State)
+			points[i] = bp
+		}
+		b.SetPoints(points)
+
+		newBegin := begin.ShallowCopy()
+		a.augmentTagsWithEventState(newBegin, event.State)
+		b.SetBegin(newBegin)
+	}
+	return b, nil
+}
+
+func (a *alertState) Point(p edge.PointMessage) (edge.Message, error) {
+	id, err := a.n.renderID(p.Name(), p.GroupID(), p.Tags())
+	if err != nil {
+		return nil, err
+	}
+	l := a.n.determineLevel(p, a.currentLevel())
+
+	a.addEvent(p.Time(), l)
+
+	if (a.n.a.UseFlapping && a.flapping) || (a.n.a.IsStateChangesOnly && !a.changed && !a.expired) {
+		return nil, nil
+	}
+	// send alert if we are not OK or we are OK and state changed (i.e recovery)
+	if l != alert.OK || a.changed {
+		a.triggered(p.Time())
+		// Suppress the recovery event.
+		if a.n.a.NoRecoveriesFlag && l == alert.OK {
+			return nil, nil
+		}
+		// Create an alert event
+		duration := a.duration()
+		event, err := a.n.event(
+			id,
+			p.Name(),
+			p.GroupID(),
+			p.Tags(),
+			p.Fields(),
+			l,
+			p.Time(),
+			duration,
+			p.ToResult(),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		a.n.handleEvent(event)
+
+		// Prepare an augmented point to return
+		p = p.ShallowCopy()
+		a.augmentTagsWithEventState(p, event.State)
+		a.augmentFieldsWithEventState(p, event.State)
+		return p, nil
+	}
+	return nil, nil
+}
+
+func (a *alertState) augmentTagsWithEventState(p edge.TagSetter, eventState alert.EventState) {
+	if a.n.a.LevelTag != "" || a.n.a.IdTag != "" {
+		tags := p.Tags().Copy()
+		if a.n.a.LevelTag != "" {
+			tags[a.n.a.LevelTag] = eventState.Level.String()
+		}
+		if a.n.a.IdTag != "" {
+			tags[a.n.a.IdTag] = eventState.ID
+		}
+		p.SetTags(tags)
+	}
+}
+
+func (a *alertState) augmentFieldsWithEventState(p edge.FieldSetter, eventState alert.EventState) {
+	if a.n.a.LevelField != "" || a.n.a.IdField != "" || a.n.a.DurationField != "" || a.n.a.MessageField != "" {
+		fields := p.Fields().Copy()
+		if a.n.a.LevelField != "" {
+			fields[a.n.a.LevelField] = eventState.Level.String()
+		}
+		if a.n.a.MessageField != "" {
+			fields[a.n.a.MessageField] = eventState.Message
+		}
+		if a.n.a.IdField != "" {
+			fields[a.n.a.IdField] = eventState.ID
+		}
+		if a.n.a.DurationField != "" {
+			fields[a.n.a.DurationField] = int64(eventState.Duration)
+		}
+		p.SetFields(fields)
+	}
+}
+
+func (a *alertState) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+	panic("not implemented")
 }
 
 // Return the duration of the current alert state.
@@ -928,10 +949,16 @@ func (a *alertState) triggered(t time.Time) {
 }
 
 // Record an event in the alert history.
-func (a *alertState) addEvent(level alert.Level) {
+func (a *alertState) addEvent(t time.Time, level alert.Level) {
+	// Check for changes
 	a.changed = a.history[a.idx] != level
+
+	// Add event to history
 	a.idx = (a.idx + 1) % len(a.history)
 	a.history[a.idx] = level
+
+	a.updateFlapping()
+	a.updateExpired(t)
 }
 
 // Return current level of this state
@@ -964,28 +991,20 @@ func (a *alertState) percentChange() float64 {
 	return p
 }
 
-func (a *AlertNode) updateState(t time.Time, level alert.Level, group models.GroupID) *alertState {
-	state, ok := a.getAlertState(group)
-	if !ok {
-		state = &alertState{
-			history: make([]alert.Level, a.a.History),
-		}
-		a.statesMu.Lock()
-		a.states[group] = state
-		a.statesMu.Unlock()
+func (a *alertState) updateFlapping() {
+	if !a.n.a.UseFlapping {
+		return
 	}
-	state.addEvent(level)
+	p := a.percentChange()
+	if a.flapping && p < a.n.a.FlapLow {
+		a.flapping = false
+	} else if !a.flapping && p > a.n.a.FlapHigh {
+		a.flapping = true
+	}
+}
 
-	if a.a.UseFlapping {
-		p := state.percentChange()
-		if state.flapping && p < a.a.FlapLow {
-			state.flapping = false
-		} else if !state.flapping && p > a.a.FlapHigh {
-			state.flapping = true
-		}
-	}
-	state.expired = !state.changed && a.a.StateChangesOnlyDuration != 0 && t.Sub(state.lastTriggered) >= a.a.StateChangesOnlyDuration
-	return state
+func (a *alertState) updateExpired(t time.Time) {
+	a.expired = !a.changed && a.n.a.StateChangesOnlyDuration != 0 && t.Sub(a.lastTriggered) >= a.n.a.StateChangesOnlyDuration
 }
 
 type serverInfo struct {
@@ -1114,11 +1133,4 @@ func (a *AlertNode) renderMessageAndDetails(id, name string, t time.Time, group 
 
 	details := tmpBuffer.String()
 	return msg, details, nil
-}
-
-func (a *AlertNode) getAlertState(id models.GroupID) (state *alertState, ok bool) {
-	a.statesMu.RLock()
-	state, ok = a.states[id]
-	a.statesMu.RUnlock()
-	return state, ok
 }

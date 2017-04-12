@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/influxdata/kapacitor/models"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/pipeline"
 )
 
@@ -71,23 +71,23 @@ func (s *StatsNode) runStats([]byte) error {
 // Emit a set of stats data points.
 func (s *StatsNode) emit(now time.Time) error {
 	s.timer.Start()
-	point := models.Point{
-		Name: "stats",
-		Tags: map[string]string{"node": s.en.Name()},
-		Time: now.UTC(),
-	}
+	name := "stats"
+	t := now.UTC()
 	if s.s.AlignFlag {
-		point.Time = point.Time.Round(s.s.Interval)
+		t = t.Round(s.s.Interval)
 	}
 	stats := s.en.nodeStatsByGroup()
-	for group, stat := range stats {
-		point.Fields = stat.Fields
-		point.Group = group
-		point.Dimensions = stat.Dimensions
-		point.Tags = stat.Tags
+	for _, stat := range stats {
+		point := edge.NewPointMessage(
+			name, "", "",
+			stat.Dimensions,
+			stat.Fields,
+			stat.Tags,
+			t,
+		)
 		s.timer.Pause()
 		for _, out := range s.outs {
-			err := out.CollectPoint(point)
+			err := out.Collect(point)
 			if err != nil {
 				return err
 			}

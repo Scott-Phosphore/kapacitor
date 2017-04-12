@@ -2,10 +2,9 @@ package kapacitor
 
 import (
 	"log"
-	"sync"
 	"time"
 
-	"github.com/influxdata/kapacitor/expvar"
+	"github.com/influxdata/kapacitor/edge"
 	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
 )
@@ -27,75 +26,96 @@ func newDerivativeNode(et *ExecutingTask, n *pipeline.DerivativeNode, l *log.Log
 }
 
 func (d *DerivativeNode) runDerivative([]byte) error {
-	switch d.Provides() {
-	case pipeline.StreamEdge:
-		var mu sync.RWMutex
-		previous := make(map[models.GroupID]models.Point)
-		valueF := func() int64 {
-			mu.RLock()
-			l := len(previous)
-			mu.RUnlock()
-			return int64(l)
-		}
-		d.statMap.Set(statCardinalityGauge, expvar.NewIntFuncGauge(valueF))
+	consumer := edge.NewGroupedConsumer(
+		d.ins[0],
+		d,
+	)
+	d.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	return consumer.Consume()
+}
 
-		for p, ok := d.ins[0].NextPoint(); ok; p, ok = d.ins[0].NextPoint() {
-			d.timer.Start()
-			mu.RLock()
-			pr := previous[p.Group]
-			mu.RUnlock()
+func (d *DerivativeNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+	return edge.NewReceiverFromForwardReceiverWithStats(
+		d.outs,
+		edge.NewTimedForwardReceiver(d.timer, d.newGroup()),
+	), nil
+}
 
-			value, store, emit := d.derivative(pr.Fields, p.Fields, pr.Time, p.Time)
-			if store {
-				mu.Lock()
-				previous[p.Group] = p
-				mu.Unlock()
-			}
-			if emit {
-				fields := p.Fields.Copy()
-				fields[d.d.As] = value
-				p.Fields = fields
-				d.timer.Pause()
-				for _, child := range d.outs {
-					err := child.CollectPoint(p)
-					if err != nil {
-						return err
-					}
-				}
-				d.timer.Resume()
-			}
-			d.timer.Stop()
-		}
-	case pipeline.BatchEdge:
-		for b, ok := d.ins[0].NextBatch(); ok; b, ok = d.ins[0].NextBatch() {
-			d.timer.Start()
-			b.Points = b.ShallowCopyPoints()
-			var pr, p models.BatchPoint
-			for i := 0; i < len(b.Points); i++ {
-				p = b.Points[i]
-				value, store, emit := d.derivative(pr.Fields, p.Fields, pr.Time, p.Time)
-				if store {
-					pr = p
-				}
-				if emit {
-					fields := p.Fields.Copy()
-					fields[d.d.As] = value
-					b.Points[i].Fields = fields
-				} else {
-					b.Points = append(b.Points[:i], b.Points[i+1:]...)
-					i--
-				}
-			}
-			d.timer.Stop()
-			for _, child := range d.outs {
-				err := child.CollectBatch(b)
-				if err != nil {
-					return err
-				}
-			}
-		}
+func (d *DerivativeNode) newGroup() *derivativeGroup {
+	return &derivativeGroup{
+		n: d,
 	}
-	return nil
+}
+
+func (d *DerivativeNode) DeleteGroup(group models.GroupID) {
+}
+
+type derivativeGroup struct {
+	n        *DerivativeNode
+	previous edge.FieldsTagsTimeGetter
+}
+
+func (g *derivativeGroup) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+	if s := begin.SizeHint(); s > 0 {
+		begin = begin.ShallowCopy()
+		begin.SetSizeHint(s - 1)
+	}
+	g.previous = nil
+	return begin, nil
+}
+
+func (g *derivativeGroup) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+	np := bp.ShallowCopy()
+	emit := g.doDerivative(bp, np)
+	if emit {
+		return np, nil
+	}
+	return nil, nil
+}
+
+func (g *derivativeGroup) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+	return end, nil
+}
+
+func (g *derivativeGroup) Point(p edge.PointMessage) (edge.Message, error) {
+	np := p.ShallowCopy()
+	emit := g.doDerivative(p, np)
+	if emit {
+		return np, nil
+	}
+	return nil, nil
+}
+
+// doDerivative computes the derivative with respect to g.previous and p.
+// The resulting derivative value will be set on n.
+func (g *derivativeGroup) doDerivative(p edge.FieldsTagsTimeGetter, n edge.FieldsTagsTimeSetter) bool {
+	var prevFields, currFields models.Fields
+	var prevTime, currTime time.Time
+	if g.previous != nil {
+		prevFields = g.previous.Fields()
+		prevTime = g.previous.Time()
+	}
+	currFields = p.Fields()
+	currTime = p.Time()
+	value, store, emit := g.n.derivative(
+		prevFields, currFields,
+		prevTime, currTime,
+	)
+	if store {
+		g.previous = p
+	}
+	if !emit {
+		return false
+	}
+
+	fields := n.Fields().Copy()
+	fields[g.n.d.As] = value
+	n.SetFields(fields)
+	return true
+}
+
+func (g *derivativeGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+	return b, nil
 }
 
 // derivative calculates the derivative between prev and cur.
