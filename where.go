@@ -42,31 +42,31 @@ func newWhereNode(et *ExecutingTask, n *pipeline.WhereNode, l *log.Logger) (wn *
 	return
 }
 
-func (w *WhereNode) runWhere(snapshot []byte) error {
+func (n *WhereNode) runWhere(snapshot []byte) error {
 	consumer := edge.NewGroupedConsumer(
-		w.ins[0],
-		w,
+		n.ins[0],
+		n,
 	)
-	w.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 
 	return consumer.Consume()
 }
 
-func (w *WhereNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *WhereNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		w.outs,
-		edge.NewTimedForwardReceiver(w.timer, w.newGroup()),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, n.newGroup()),
 	), nil
 }
 
-func (w *WhereNode) newGroup() *whereGroup {
+func (n *WhereNode) newGroup() *whereGroup {
 	return &whereGroup{
-		n:    w,
-		expr: w.expression.CopyReset(),
+		n:    n,
+		expr: n.expression.CopyReset(),
 	}
 }
 
-func (w *WhereNode) DeleteGroup(group models.GroupID) {
+func (n *WhereNode) DeleteGroup(group models.GroupID) {
 }
 
 type whereGroup struct {

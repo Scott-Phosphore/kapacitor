@@ -25,29 +25,29 @@ func newDerivativeNode(et *ExecutingTask, n *pipeline.DerivativeNode, l *log.Log
 	return dn, nil
 }
 
-func (d *DerivativeNode) runDerivative([]byte) error {
+func (n *DerivativeNode) runDerivative([]byte) error {
 	consumer := edge.NewGroupedConsumer(
-		d.ins[0],
-		d,
+		n.ins[0],
+		n,
 	)
-	d.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 	return consumer.Consume()
 }
 
-func (d *DerivativeNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *DerivativeNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		d.outs,
-		edge.NewTimedForwardReceiver(d.timer, d.newGroup()),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, n.newGroup()),
 	), nil
 }
 
-func (d *DerivativeNode) newGroup() *derivativeGroup {
+func (n *DerivativeNode) newGroup() *derivativeGroup {
 	return &derivativeGroup{
-		n: d,
+		n: n,
 	}
 }
 
-func (d *DerivativeNode) DeleteGroup(group models.GroupID) {
+func (n *DerivativeNode) DeleteGroup(group models.GroupID) {
 }
 
 type derivativeGroup struct {
@@ -121,15 +121,15 @@ func (g *derivativeGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 // derivative calculates the derivative between prev and cur.
 // Return is the resulting derivative, whether the current point should be
 // stored as previous, and whether the point result should be emitted.
-func (d *DerivativeNode) derivative(prev, curr models.Fields, prevTime, currTime time.Time) (float64, bool, bool) {
-	f1, ok := numToFloat(curr[d.d.Field])
+func (n *DerivativeNode) derivative(prev, curr models.Fields, prevTime, currTime time.Time) (float64, bool, bool) {
+	f1, ok := numToFloat(curr[n.d.Field])
 	if !ok {
-		d.incrementErrorCount()
-		d.logger.Printf("E! cannot apply derivative to type %T", curr[d.d.Field])
+		n.incrementErrorCount()
+		n.logger.Printf("E! cannot apply derivative to type %T", curr[n.d.Field])
 		return 0, false, false
 	}
 
-	f0, ok := numToFloat(prev[d.d.Field])
+	f0, ok := numToFloat(prev[n.d.Field])
 	if !ok {
 		// The only time this will fail to parse is if there is no previous.
 		// Because we only return `store=true` if current parses successfully, we will
@@ -139,17 +139,17 @@ func (d *DerivativeNode) derivative(prev, curr models.Fields, prevTime, currTime
 
 	elapsed := float64(currTime.Sub(prevTime))
 	if elapsed == 0 {
-		d.incrementErrorCount()
-		d.logger.Printf("E! cannot perform derivative elapsed time was 0")
+		n.incrementErrorCount()
+		n.logger.Printf("E! cannot perform derivative elapsed time was 0")
 		return 0, true, false
 	}
 	diff := f1 - f0
 	// Drop negative values for non-negative derivatives
-	if d.d.NonNegativeFlag && diff < 0 {
+	if n.d.NonNegativeFlag && diff < 0 {
 		return 0, true, false
 	}
 
-	value := float64(diff) / (elapsed / float64(d.d.Unit))
+	value := float64(diff) / (elapsed / float64(n.d.Unit))
 	return value, true, true
 }
 

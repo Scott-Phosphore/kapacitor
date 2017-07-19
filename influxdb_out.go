@@ -50,29 +50,29 @@ func newInfluxDBOutNode(et *ExecutingTask, n *pipeline.InfluxDBOutNode, l *log.L
 	return in, nil
 }
 
-func (i *InfluxDBOutNode) runOut([]byte) error {
-	i.pointsWritten = &expvar.Int{}
-	i.writeErrors = &expvar.Int{}
+func (n *InfluxDBOutNode) runOut([]byte) error {
+	n.pointsWritten = &expvar.Int{}
+	n.writeErrors = &expvar.Int{}
 
-	i.statMap.Set(statsInfluxDBPointsWritten, i.pointsWritten)
-	i.statMap.Set(statsInfluxDBWriteErrors, i.writeErrors)
+	n.statMap.Set(statsInfluxDBPointsWritten, n.pointsWritten)
+	n.statMap.Set(statsInfluxDBWriteErrors, n.writeErrors)
 
 	// Start the write buffer
-	i.wb.start()
+	n.wb.start()
 
 	// Create the database and retention policy
-	if i.i.CreateFlag {
+	if n.i.CreateFlag {
 		err := func() error {
-			cli, err := i.et.tm.InfluxDBService.NewNamedClient(i.i.Cluster)
+			cli, err := n.et.tm.InfluxDBService.NewNamedClient(n.i.Cluster)
 			if err != nil {
 				return err
 			}
 			var createDb bytes.Buffer
 			createDb.WriteString("CREATE DATABASE ")
-			createDb.WriteString(influxql.QuoteIdent(i.i.Database))
-			if i.i.RetentionPolicy != "" {
+			createDb.WriteString(influxql.QuoteIdent(n.i.Database))
+			if n.i.RetentionPolicy != "" {
 				createDb.WriteString(" WITH NAME ")
-				createDb.WriteString(influxql.QuoteIdent(i.i.RetentionPolicy))
+				createDb.WriteString(influxql.QuoteIdent(n.i.RetentionPolicy))
 			}
 			_, err = cli.Query(influxdb.Query{Command: createDb.String()})
 			if err != nil {
@@ -81,40 +81,40 @@ func (i *InfluxDBOutNode) runOut([]byte) error {
 			return nil
 		}()
 		if err != nil {
-			i.incrementErrorCount()
-			i.logger.Printf("E! failed to create database %q on cluster %q: %v", i.i.Database, i.i.Cluster, err)
+			n.incrementErrorCount()
+			n.logger.Printf("E! failed to create database %q on cluster %q: %v", n.i.Database, n.i.Cluster, err)
 		}
 	}
 
 	// Setup consumer
 	consumer := edge.NewConsumerWithReceiver(
-		i.ins[0],
+		n.ins[0],
 		edge.NewReceiverFromForwardReceiverWithStats(
-			i.outs,
-			edge.NewTimedForwardReceiver(i.timer, i),
+			n.outs,
+			edge.NewTimedForwardReceiver(n.timer, n),
 		),
 	)
 	return consumer.Consume()
 }
 
-func (i *InfluxDBOutNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
-	return nil, i.batchBuffer.BeginBatch(begin)
+func (n *InfluxDBOutNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+	return nil, n.batchBuffer.BeginBatch(begin)
 }
 
-func (i *InfluxDBOutNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
-	return nil, i.batchBuffer.BatchPoint(bp)
+func (n *InfluxDBOutNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+	return nil, n.batchBuffer.BatchPoint(bp)
 }
 
-func (i *InfluxDBOutNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
-	return i.BufferedBatch(i.batchBuffer.BufferedBatchMessage(end))
+func (n *InfluxDBOutNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+	return n.BufferedBatch(n.batchBuffer.BufferedBatchMessage(end))
 }
 
-func (i *InfluxDBOutNode) BufferedBatch(batch edge.BufferedBatchMessage) (edge.Message, error) {
-	i.write("", "", batch)
+func (n *InfluxDBOutNode) BufferedBatch(batch edge.BufferedBatchMessage) (edge.Message, error) {
+	n.write("", "", batch)
 	return batch, nil
 }
 
-func (i *InfluxDBOutNode) Point(p edge.PointMessage) (edge.Message, error) {
+func (n *InfluxDBOutNode) Point(p edge.PointMessage) (edge.Message, error) {
 	batch := edge.NewBufferedBatchMessage(
 		edge.NewBeginBatchMessage(
 			p.Name(),
@@ -132,27 +132,27 @@ func (i *InfluxDBOutNode) Point(p edge.PointMessage) (edge.Message, error) {
 		},
 		edge.NewEndBatchMessage(),
 	)
-	i.write(p.Database(), p.RetentionPolicy(), batch)
+	n.write(p.Database(), p.RetentionPolicy(), batch)
 	return p, nil
 }
 
-func (i *InfluxDBOutNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+func (n *InfluxDBOutNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
 
-func (i *InfluxDBOutNode) stopOut() {
-	i.wb.flush()
-	i.wb.abort()
+func (n *InfluxDBOutNode) stopOut() {
+	n.wb.flush()
+	n.wb.abort()
 }
 
-func (i *InfluxDBOutNode) write(db, rp string, batch edge.BufferedBatchMessage) error {
-	if i.i.Database != "" {
-		db = i.i.Database
+func (n *InfluxDBOutNode) write(db, rp string, batch edge.BufferedBatchMessage) error {
+	if n.i.Database != "" {
+		db = n.i.Database
 	}
-	if i.i.RetentionPolicy != "" {
-		rp = i.i.RetentionPolicy
+	if n.i.RetentionPolicy != "" {
+		rp = n.i.RetentionPolicy
 	}
-	name := i.i.Measurement
+	name := n.i.Measurement
 	if name == "" {
 		name = batch.Name()
 	}
@@ -160,12 +160,12 @@ func (i *InfluxDBOutNode) write(db, rp string, batch edge.BufferedBatchMessage) 
 	points := make([]influxdb.Point, len(batch.Points()))
 	for j, p := range batch.Points() {
 		var tags map[string]string
-		if len(i.i.Tags) > 0 {
-			tags = make(map[string]string, len(p.Tags())+len(i.i.Tags))
+		if len(n.i.Tags) > 0 {
+			tags = make(map[string]string, len(p.Tags())+len(n.i.Tags))
 			for k, v := range p.Tags() {
 				tags[k] = v
 			}
-			for k, v := range i.i.Tags {
+			for k, v := range n.i.Tags {
 				tags[k] = v
 			}
 		} else {
@@ -181,10 +181,10 @@ func (i *InfluxDBOutNode) write(db, rp string, batch edge.BufferedBatchMessage) 
 	bpc := influxdb.BatchPointsConfig{
 		Database:         db,
 		RetentionPolicy:  rp,
-		WriteConsistency: i.i.WriteConsistency,
-		Precision:        i.i.Precision,
+		WriteConsistency: n.i.WriteConsistency,
+		Precision:        n.i.Precision,
 	}
-	i.wb.enqueue(bpc, points)
+	n.wb.enqueue(bpc, points)
 	return nil
 }
 

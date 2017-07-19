@@ -44,60 +44,60 @@ func newGroupByNode(et *ExecutingTask, n *pipeline.GroupByNode, l *log.Logger) (
 	return gn, nil
 }
 
-func (g *GroupByNode) runGroupBy([]byte) error {
+func (n *GroupByNode) runGroupBy([]byte) error {
 	valueF := func() int64 {
-		g.mu.RLock()
-		l := len(g.groups)
-		g.mu.RUnlock()
+		n.mu.RLock()
+		l := len(n.groups)
+		n.mu.RUnlock()
 		return int64(l)
 	}
-	g.statMap.Set(statCardinalityGauge, expvar.NewIntFuncGauge(valueF))
+	n.statMap.Set(statCardinalityGauge, expvar.NewIntFuncGauge(valueF))
 
 	consumer := edge.NewConsumerWithReceiver(
-		g.ins[0],
-		g,
+		n.ins[0],
+		n,
 	)
 	return consumer.Consume()
 }
 
-func (g *GroupByNode) Point(p edge.PointMessage) error {
+func (n *GroupByNode) Point(p edge.PointMessage) error {
 	p = p.ShallowCopy()
-	g.timer.Start()
+	n.timer.Start()
 	dims := p.Dimensions()
-	dims.ByName = dims.ByName || g.byName
-	dims.TagNames = computeTagNames(p.Tags(), g.allDimensions, g.tagNames, g.g.ExcludedDimensions)
+	dims.ByName = dims.ByName || n.byName
+	dims.TagNames = computeTagNames(p.Tags(), n.allDimensions, n.tagNames, n.g.ExcludedDimensions)
 	p.SetDimensions(dims)
-	g.timer.Stop()
-	if err := edge.Forward(g.outs, p); err != nil {
+	n.timer.Stop()
+	if err := edge.Forward(n.outs, p); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (g *GroupByNode) BeginBatch(begin edge.BeginBatchMessage) error {
-	g.timer.Start()
-	defer g.timer.Stop()
+func (n *GroupByNode) BeginBatch(begin edge.BeginBatchMessage) error {
+	n.timer.Start()
+	defer n.timer.Stop()
 
-	g.emit(begin.Time())
+	n.emit(begin.Time())
 
-	g.begin = begin
-	g.dimensions = begin.Dimensions()
-	g.dimensions.ByName = g.dimensions.ByName || g.byName
+	n.begin = begin
+	n.dimensions = begin.Dimensions()
+	n.dimensions.ByName = n.dimensions.ByName || n.byName
 
 	return nil
 }
 
-func (g *GroupByNode) BatchPoint(bp edge.BatchPointMessage) error {
-	g.timer.Start()
-	defer g.timer.Stop()
+func (n *GroupByNode) BatchPoint(bp edge.BatchPointMessage) error {
+	n.timer.Start()
+	defer n.timer.Stop()
 
-	g.dimensions.TagNames = computeTagNames(bp.Tags(), g.allDimensions, g.tagNames, g.g.ExcludedDimensions)
-	groupID := models.ToGroupID(g.begin.Name(), bp.Tags(), g.dimensions)
-	group, ok := g.groups[groupID]
+	n.dimensions.TagNames = computeTagNames(bp.Tags(), n.allDimensions, n.tagNames, n.g.ExcludedDimensions)
+	groupID := models.ToGroupID(n.begin.Name(), bp.Tags(), n.dimensions)
+	group, ok := n.groups[groupID]
 	if !ok {
 		// Create new begin message
-		newBegin := g.begin.ShallowCopy()
-		newBegin.SetTagsAndDimensions(bp.Tags(), g.dimensions)
+		newBegin := n.begin.ShallowCopy()
+		newBegin.SetTagsAndDimensions(bp.Tags(), n.dimensions)
 
 		// Create buffer for group batch
 		group = edge.NewBufferedBatchMessage(
@@ -105,48 +105,48 @@ func (g *GroupByNode) BatchPoint(bp edge.BatchPointMessage) error {
 			make([]edge.BatchPointMessage, 0, newBegin.SizeHint()),
 			edge.NewEndBatchMessage(),
 		)
-		g.mu.Lock()
-		g.groups[groupID] = group
-		g.mu.Unlock()
+		n.mu.Lock()
+		n.groups[groupID] = group
+		n.mu.Unlock()
 	}
 	group.SetPoints(append(group.Points(), bp))
 
 	return nil
 }
 
-func (g *GroupByNode) EndBatch(end edge.EndBatchMessage) error {
+func (n *GroupByNode) EndBatch(end edge.EndBatchMessage) error {
 	return nil
 }
 
-func (g *GroupByNode) Barrier(b edge.BarrierMessage) error {
-	g.timer.Start()
-	err := g.emit(b.Time())
-	g.timer.Stop()
+func (n *GroupByNode) Barrier(b edge.BarrierMessage) error {
+	n.timer.Start()
+	err := n.emit(b.Time())
+	n.timer.Stop()
 	return err
 }
 
 // emit sends all groups before time t to children nodes.
 // The node timer must be started when calling this method.
-func (g *GroupByNode) emit(t time.Time) error {
+func (n *GroupByNode) emit(t time.Time) error {
 	// TODO: ensure this time comparison works with barrier messages
-	if !t.Equal(g.lastTime) {
-		g.lastTime = t
+	if !t.Equal(n.lastTime) {
+		n.lastTime = t
 		// Emit all groups
-		for id, group := range g.groups {
+		for id, group := range n.groups {
 			// Update SizeHint since we know the final point count
 			group.Begin().SetSizeHint(len(group.Points()))
 			// Sort points since we didn't guarantee insertion order was sorted
 			sort.Sort(edge.BatchPointMessages(group.Points()))
 			// Send group batch to all children
-			g.timer.Pause()
-			if err := edge.Forward(g.outs, group); err != nil {
+			n.timer.Pause()
+			if err := edge.Forward(n.outs, group); err != nil {
 				return err
 			}
-			g.timer.Resume()
-			g.mu.Lock()
+			n.timer.Resume()
+			n.mu.Lock()
 			// Remove from group
-			delete(g.groups, id)
-			g.mu.Unlock()
+			delete(n.groups, id)
+			n.mu.Unlock()
 		}
 	}
 	return nil

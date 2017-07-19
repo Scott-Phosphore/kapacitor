@@ -33,28 +33,28 @@ func newSampleNode(et *ExecutingTask, n *pipeline.SampleNode, l *log.Logger) (*S
 	return sn, nil
 }
 
-func (s *SampleNode) runSample([]byte) error {
+func (n *SampleNode) runSample([]byte) error {
 	consumer := edge.NewGroupedConsumer(
-		s.ins[0],
-		s,
+		n.ins[0],
+		n,
 	)
-	s.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 	return consumer.Consume()
 }
 
-func (s *SampleNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *SampleNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		s.outs,
-		edge.NewTimedForwardReceiver(s.timer, s.newGroup()),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, n.newGroup()),
 	), nil
 }
-func (s *SampleNode) newGroup() *sampleGroup {
+func (n *SampleNode) newGroup() *sampleGroup {
 	return &sampleGroup{
-		n: s,
+		n: n,
 	}
 }
 
-func (s *SampleNode) DeleteGroup(group models.GroupID) {
+func (n *SampleNode) DeleteGroup(group models.GroupID) {
 }
 
 type sampleGroup struct {
@@ -94,11 +94,11 @@ func (g *sampleGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
 
-func (s *SampleNode) shouldKeep(count int64, t time.Time) bool {
-	if s.duration != 0 {
-		keepTime := t.Truncate(s.duration)
+func (n *SampleNode) shouldKeep(count int64, t time.Time) bool {
+	if n.duration != 0 {
+		keepTime := t.Truncate(n.duration)
 		return t.Equal(keepTime)
 	} else {
-		return count%s.s.N == 0
+		return count%n.s.N == 0
 	}
 }

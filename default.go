@@ -34,42 +34,42 @@ func newDefaultNode(et *ExecutingTask, n *pipeline.DefaultNode, l *log.Logger) (
 	return dn, nil
 }
 
-func (e *DefaultNode) runDefault(snapshot []byte) error {
-	e.statMap.Set(statsFieldsDefaulted, e.fieldsDefaulted)
-	e.statMap.Set(statsTagsDefaulted, e.tagsDefaulted)
+func (n *DefaultNode) runDefault(snapshot []byte) error {
+	n.statMap.Set(statsFieldsDefaulted, n.fieldsDefaulted)
+	n.statMap.Set(statsTagsDefaulted, n.tagsDefaulted)
 
 	consumer := edge.NewConsumerWithReceiver(
-		e.ins[0],
+		n.ins[0],
 		edge.NewReceiverFromForwardReceiverWithStats(
-			e.outs,
-			edge.NewTimedForwardReceiver(e.timer, e),
+			n.outs,
+			edge.NewTimedForwardReceiver(n.timer, n),
 		),
 	)
 	return consumer.Consume()
 }
 
-func (e *DefaultNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+func (n *DefaultNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
 	begin = begin.ShallowCopy()
-	_, tags := e.setDefaults(nil, begin.Tags())
+	_, tags := n.setDefaults(nil, begin.Tags())
 	begin.SetTags(tags)
 	return begin, nil
 }
 
-func (e *DefaultNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+func (n *DefaultNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
 	bp = bp.ShallowCopy()
-	fields, tags := e.setDefaults(bp.Fields(), bp.Tags())
+	fields, tags := n.setDefaults(bp.Fields(), bp.Tags())
 	bp.SetFields(fields)
 	bp.SetTags(tags)
 	return bp, nil
 }
 
-func (e *DefaultNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+func (n *DefaultNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
 	return end, nil
 }
 
-func (e *DefaultNode) Point(p edge.PointMessage) (edge.Message, error) {
+func (n *DefaultNode) Point(p edge.PointMessage) (edge.Message, error) {
 	p = p.ShallowCopy()
-	fields, tags := e.setDefaults(p.Fields(), p.Tags())
+	fields, tags := n.setDefaults(p.Fields(), p.Tags())
 	p.SetFields(fields)
 	p.SetTags(tags)
 	return p, nil
@@ -79,28 +79,28 @@ func (n *DefaultNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
 
-func (d *DefaultNode) setDefaults(fields models.Fields, tags models.Tags) (models.Fields, models.Tags) {
+func (n *DefaultNode) setDefaults(fields models.Fields, tags models.Tags) (models.Fields, models.Tags) {
 	newFields := fields
 	fieldsCopied := false
-	for field, value := range d.d.Fields {
+	for field, value := range n.d.Fields {
 		if v := fields[field]; v == nil {
 			if !fieldsCopied {
 				newFields = newFields.Copy()
 				fieldsCopied = true
 			}
-			d.fieldsDefaulted.Add(1)
+			n.fieldsDefaulted.Add(1)
 			newFields[field] = value
 		}
 	}
 	newTags := tags
 	tagsCopied := false
-	for tag, value := range d.d.Tags {
+	for tag, value := range n.d.Tags {
 		if v := tags[tag]; v == "" {
 			if !tagsCopied {
 				newTags = newTags.Copy()
 				tagsCopied = true
 			}
-			d.tagsDefaulted.Add(1)
+			n.tagsDefaulted.Add(1)
 			newTags[tag] = value
 		}
 	}

@@ -54,45 +54,45 @@ func newUDFNode(et *ExecutingTask, n *pipeline.UDFNode, l *log.Logger) (*UDFNode
 
 var errNodeAborted = errors.New("node aborted")
 
-func (u *UDFNode) stopUDF() {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if !u.stopped {
-		u.stopped = true
-		if u.udf != nil {
-			u.udf.Abort(errNodeAborted)
+func (n *UDFNode) stopUDF() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.stopped {
+		n.stopped = true
+		if n.udf != nil {
+			n.udf.Abort(errNodeAborted)
 		}
 	}
 }
 
-func (u *UDFNode) runUDF(snapshot []byte) (err error) {
+func (n *UDFNode) runUDF(snapshot []byte) (err error) {
 	defer func() {
-		u.mu.Lock()
-		defer u.mu.Unlock()
+		n.mu.Lock()
+		defer n.mu.Unlock()
 		//Ignore stopped errors if the udf was stopped externally
-		if u.stopped && (err == udf.ErrServerStopped || err == errNodeAborted) {
+		if n.stopped && (err == udf.ErrServerStopped || err == errNodeAborted) {
 			err = nil
 		}
-		u.stopped = true
+		n.stopped = true
 	}()
 
-	if err := u.udf.Open(); err != nil {
+	if err := n.udf.Open(); err != nil {
 		return err
 	}
-	if err := u.udf.Init(u.u.Options); err != nil {
+	if err := n.udf.Init(n.u.Options); err != nil {
 		return err
 	}
 	if snapshot != nil {
-		if err := u.udf.Restore(snapshot); err != nil {
+		if err := n.udf.Restore(snapshot); err != nil {
 			return err
 		}
 	}
 
 	forwardErr := make(chan error, 1)
 	go func() {
-		out := u.udf.Out()
+		out := n.udf.Out()
 		for m := range out {
-			if err := edge.Forward(u.outs, m); err != nil {
+			if err := edge.Forward(n.outs, m); err != nil {
 				forwardErr <- err
 				return
 			}
@@ -102,26 +102,26 @@ func (u *UDFNode) runUDF(snapshot []byte) (err error) {
 
 	// The abort callback needs to know when we are done writing
 	// so we wrap in a wait group.
-	u.wg.Add(1)
+	n.wg.Add(1)
 	go func() {
-		defer u.wg.Done()
-		in := u.udf.In()
-		for m, ok := u.ins[0].Emit(); ok; m, ok = u.ins[0].Emit() {
-			u.timer.Start()
+		defer n.wg.Done()
+		in := n.udf.In()
+		for m, ok := n.ins[0].Emit(); ok; m, ok = n.ins[0].Emit() {
+			n.timer.Start()
 			select {
 			case in <- m:
-			case <-u.aborted:
+			case <-n.aborted:
 				return
 			}
-			u.timer.Stop()
+			n.timer.Stop()
 		}
 	}()
 
 	// wait till we are done writing
-	u.wg.Wait()
+	n.wg.Wait()
 
 	// Close the udf
-	if err := u.udf.Close(); err != nil {
+	if err := n.udf.Close(); err != nil {
 		return err
 	}
 
@@ -129,14 +129,14 @@ func (u *UDFNode) runUDF(snapshot []byte) (err error) {
 	return <-forwardErr
 }
 
-func (u *UDFNode) abortedCallback() {
-	close(u.aborted)
+func (n *UDFNode) abortedCallback() {
+	close(n.aborted)
 	// wait till we are done writing
-	u.wg.Wait()
+	n.wg.Wait()
 }
 
-func (u *UDFNode) snapshot() ([]byte, error) {
-	return u.udf.Snapshot()
+func (n *UDFNode) snapshot() ([]byte, error) {
+	return n.udf.Snapshot()
 }
 
 // UDFProcess wraps an external process and sends and receives data

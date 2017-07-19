@@ -30,43 +30,43 @@ func newShiftNode(et *ExecutingTask, n *pipeline.ShiftNode, l *log.Logger) (*Shi
 	return sn, nil
 }
 
-func (s *ShiftNode) runShift([]byte) error {
+func (n *ShiftNode) runShift([]byte) error {
 	consumer := edge.NewConsumerWithReceiver(
-		s.ins[0],
+		n.ins[0],
 		edge.NewReceiverFromForwardReceiverWithStats(
-			s.outs,
-			edge.NewTimedForwardReceiver(s.timer, s),
+			n.outs,
+			edge.NewTimedForwardReceiver(n.timer, n),
 		),
 	)
 	return consumer.Consume()
 }
 
-func (s *ShiftNode) doShift(t edge.TimeSetter) {
-	t.SetTime(t.Time().Add(s.shift))
+func (n *ShiftNode) doShift(t edge.TimeSetter) {
+	t.SetTime(t.Time().Add(n.shift))
 }
 
-func (s *ShiftNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+func (n *ShiftNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
 	begin = begin.ShallowCopy()
-	s.doShift(begin)
+	n.doShift(begin)
 	return begin, nil
 }
 
-func (s *ShiftNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+func (n *ShiftNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
 	bp = bp.ShallowCopy()
-	s.doShift(bp)
+	n.doShift(bp)
 	return bp, nil
 }
 
-func (s *ShiftNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+func (n *ShiftNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
 	return end, nil
 }
 
-func (s *ShiftNode) Point(p edge.PointMessage) (edge.Message, error) {
+func (n *ShiftNode) Point(p edge.PointMessage) (edge.Message, error) {
 	p = p.ShallowCopy()
-	s.doShift(p)
+	n.doShift(p)
 	return p, nil
 }
 
-func (s *ShiftNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+func (n *ShiftNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }

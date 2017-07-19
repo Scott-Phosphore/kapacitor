@@ -51,29 +51,29 @@ func newHTTPPostNode(et *ExecutingTask, n *pipeline.HTTPPostNode, l *log.Logger)
 	return hn, nil
 }
 
-func (h *HTTPPostNode) runPost([]byte) error {
+func (n *HTTPPostNode) runPost([]byte) error {
 	consumer := edge.NewGroupedConsumer(
-		h.ins[0],
-		h,
+		n.ins[0],
+		n,
 	)
-	h.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 
 	return consumer.Consume()
 
 }
 
-func (h *HTTPPostNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *HTTPPostNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	g := &httpPostGroup{
-		n:      h,
+		n:      n,
 		buffer: new(edge.BatchBuffer),
 	}
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		h.outs,
-		edge.NewTimedForwardReceiver(h.timer, g),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, g),
 	), nil
 }
 
-func (h *HTTPPostNode) DeleteGroup(group models.GroupID) {
+func (n *HTTPPostNode) DeleteGroup(group models.GroupID) {
 }
 
 type httpPostGroup struct {
@@ -109,33 +109,33 @@ func (g *httpPostGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
 
-func (h *HTTPPostNode) postRow(row *models.Row) {
+func (n *HTTPPostNode) postRow(row *models.Row) {
 	result := new(models.Result)
 	result.Series = []*models.Row{row}
 
-	body := h.bp.Get()
-	defer h.bp.Put(body)
+	body := n.bp.Get()
+	defer n.bp.Put(body)
 	err := json.NewEncoder(body).Encode(result)
 	if err != nil {
-		h.incrementErrorCount()
-		h.logger.Printf("E! failed to marshal row data json: %v", err)
+		n.incrementErrorCount()
+		n.logger.Printf("E! failed to marshal row data json: %v", err)
 		return
 	}
-	req, err := h.endpoint.NewHTTPRequest(body)
+	req, err := n.endpoint.NewHTTPRequest(body)
 	if err != nil {
-		h.incrementErrorCount()
-		h.logger.Printf("E! failed to marshal row data json: %v", err)
+		n.incrementErrorCount()
+		n.logger.Printf("E! failed to marshal row data json: %v", err)
 		return
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range h.c.Headers {
+	for k, v := range n.c.Headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		h.incrementErrorCount()
-		h.logger.Printf("E! failed to POST row data: %v", err)
+		n.incrementErrorCount()
+		n.logger.Printf("E! failed to POST row data: %v", err)
 		return
 	}
 	resp.Body.Close()

@@ -27,9 +27,9 @@ func newStreamNode(et *ExecutingTask, n *pipeline.StreamNode, l *log.Logger) (*S
 	return sn, nil
 }
 
-func (s *StreamNode) runSourceStream([]byte) error {
-	for m, ok := s.ins[0].Emit(); ok; m, ok = s.ins[0].Emit() {
-		for _, child := range s.outs {
+func (n *StreamNode) runSourceStream([]byte) error {
+	for m, ok := n.ins[0].Emit(); ok; m, ok = n.ins[0].Emit() {
+		for _, child := range n.outs {
 			err := child.Collect(m)
 			if err != nil {
 				return err
@@ -76,62 +76,62 @@ func newFromNode(et *ExecutingTask, n *pipeline.FromNode, l *log.Logger) (*FromN
 	return sn, nil
 }
 
-func (s *FromNode) runStream([]byte) error {
+func (n *FromNode) runStream([]byte) error {
 	consumer := edge.NewConsumerWithReceiver(
-		s.ins[0],
+		n.ins[0],
 		edge.NewReceiverFromForwardReceiverWithStats(
-			s.outs,
-			s,
+			n.outs,
+			n,
 		),
 	)
 	return consumer.Consume()
 }
-func (s *FromNode) BeginBatch(edge.BeginBatchMessage) (edge.Message, error) {
+func (n *FromNode) BeginBatch(edge.BeginBatchMessage) (edge.Message, error) {
 	return nil, errors.New("from does not support batch data")
 }
-func (s *FromNode) BatchPoint(edge.BatchPointMessage) (edge.Message, error) {
+func (n *FromNode) BatchPoint(edge.BatchPointMessage) (edge.Message, error) {
 	return nil, errors.New("from does not support batch data")
 }
-func (s *FromNode) EndBatch(edge.EndBatchMessage) (edge.Message, error) {
+func (n *FromNode) EndBatch(edge.EndBatchMessage) (edge.Message, error) {
 	return nil, errors.New("from does not support batch data")
 }
 
-func (s *FromNode) Point(p edge.PointMessage) (edge.Message, error) {
-	if s.matches(p) {
+func (n *FromNode) Point(p edge.PointMessage) (edge.Message, error) {
+	if n.matches(p) {
 		p = p.ShallowCopy()
-		if s.s.Truncate != 0 {
-			p.SetTime(p.Time().Truncate(s.s.Truncate))
+		if n.s.Truncate != 0 {
+			p.SetTime(p.Time().Truncate(n.s.Truncate))
 		}
-		if s.s.Round != 0 {
-			p.SetTime(p.Time().Round(s.s.Round))
+		if n.s.Round != 0 {
+			p.SetTime(p.Time().Round(n.s.Round))
 		}
 		p.SetDimensions(models.Dimensions{
-			ByName:   s.s.GroupByMeasurementFlag,
-			TagNames: computeTagNames(p.Tags(), s.allDimensions, s.tagNames, nil),
+			ByName:   n.s.GroupByMeasurementFlag,
+			TagNames: computeTagNames(p.Tags(), n.allDimensions, n.tagNames, nil),
 		})
 		return p, nil
 	}
 	return nil, nil
 }
 
-func (s *FromNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+func (n *FromNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
 
-func (s *FromNode) matches(p edge.PointMessage) bool {
-	if s.db != "" && p.Database() != s.db {
+func (n *FromNode) matches(p edge.PointMessage) bool {
+	if n.db != "" && p.Database() != n.db {
 		return false
 	}
-	if s.rp != "" && p.RetentionPolicy() != s.rp {
+	if n.rp != "" && p.RetentionPolicy() != n.rp {
 		return false
 	}
-	if s.name != "" && p.Name() != s.name {
+	if n.name != "" && p.Name() != n.name {
 		return false
 	}
-	if s.expression != nil {
-		if pass, err := EvalPredicate(s.expression, s.scopePool, p); err != nil {
-			s.incrementErrorCount()
-			s.logger.Println("E! error while evaluating WHERE expression:", err)
+	if n.expression != nil {
+		if pass, err := EvalPredicate(n.expression, n.scopePool, p); err != nil {
+			n.incrementErrorCount()
+			n.logger.Println("E! error while evaluating WHERE expression:", err)
 			return false
 		} else {
 			return pass

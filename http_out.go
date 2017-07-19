@@ -38,16 +38,16 @@ func newHTTPOutNode(et *ExecutingTask, n *pipeline.HTTPOutNode, l *log.Logger) (
 	return hn, nil
 }
 
-func (h *HTTPOutNode) Endpoint() string {
-	return h.endpoint
+func (n *HTTPOutNode) Endpoint() string {
+	return n.endpoint
 }
 
-func (h *HTTPOutNode) runOut([]byte) error {
+func (n *HTTPOutNode) runOut([]byte) error {
 	hndl := func(w http.ResponseWriter, req *http.Request) {
-		h.mu.RLock()
-		defer h.mu.RUnlock()
+		n.mu.RLock()
+		defer n.mu.RUnlock()
 
-		if b, err := json.Marshal(h.result); err != nil {
+		if b, err := json.Marshal(n.result); err != nil {
 			httpd.HttpError(
 				w,
 				err.Error(),
@@ -59,7 +59,7 @@ func (h *HTTPOutNode) runOut([]byte) error {
 		}
 	}
 
-	p := path.Join("/tasks/", h.et.Task.ID, h.c.Endpoint)
+	p := path.Join("/tasks/", n.et.Task.ID, n.c.Endpoint)
 
 	r := []httpd.Route{{
 		Method:      "GET",
@@ -67,73 +67,73 @@ func (h *HTTPOutNode) runOut([]byte) error {
 		HandlerFunc: hndl,
 	}}
 
-	h.endpoint = h.et.tm.HTTPDService.URL() + p
-	h.mu.Lock()
-	h.routes = r
-	h.mu.Unlock()
+	n.endpoint = n.et.tm.HTTPDService.URL() + p
+	n.mu.Lock()
+	n.routes = r
+	n.mu.Unlock()
 
-	err := h.et.tm.HTTPDService.AddRoutes(r)
+	err := n.et.tm.HTTPDService.AddRoutes(r)
 	if err != nil {
 		return err
 	}
 
 	consumer := edge.NewGroupedConsumer(
-		h.ins[0],
-		h,
+		n.ins[0],
+		n,
 	)
-	h.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 
 	return consumer.Consume()
 }
 
 // Update the result structure with a row.
-func (h *HTTPOutNode) updateResultWithRow(idx int, row *models.Row) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if idx >= len(h.result.Series) {
-		h.incrementErrorCount()
-		h.logger.Printf("E! index out of range for row update %d", idx)
+func (n *HTTPOutNode) updateResultWithRow(idx int, row *models.Row) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if idx >= len(n.result.Series) {
+		n.incrementErrorCount()
+		n.logger.Printf("E! index out of range for row update %d", idx)
 		return
 	}
-	h.result.Series[idx] = row
+	n.result.Series[idx] = row
 }
 
-func (h *HTTPOutNode) stopOut() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.et.tm.HTTPDService.DelRoutes(h.routes)
+func (n *HTTPOutNode) stopOut() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.et.tm.HTTPDService.DelRoutes(n.routes)
 }
 
-func (h *HTTPOutNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *HTTPOutNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		h.outs,
-		edge.NewTimedForwardReceiver(h.timer, h.newGroup(group.ID)),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, n.newGroup(group.ID)),
 	), nil
 }
 
-func (h *HTTPOutNode) newGroup(groupID models.GroupID) *httpOutGroup {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (n *HTTPOutNode) newGroup(groupID models.GroupID) *httpOutGroup {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-	idx := len(h.result.Series)
-	h.result.Series = append(h.result.Series, nil)
+	idx := len(n.result.Series)
+	n.result.Series = append(n.result.Series, nil)
 	g := &httpOutGroup{
-		n:      h,
+		n:      n,
 		idx:    idx,
 		buffer: new(edge.BatchBuffer),
 	}
-	h.indexes = append(h.indexes, g)
+	n.indexes = append(n.indexes, g)
 	return g
 }
 
-func (h *HTTPOutNode) DeleteGroup(groupID models.GroupID) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (n *HTTPOutNode) DeleteGroup(groupID models.GroupID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-	filteredSeries := h.result.Series[0:0]
-	filtered := h.indexes[0:0]
+	filteredSeries := n.result.Series[0:0]
+	filtered := n.indexes[0:0]
 	found := false
-	for i, g := range h.indexes {
+	for i, g := range n.indexes {
 		if groupID == g.id {
 			found = true
 			continue
@@ -142,10 +142,10 @@ func (h *HTTPOutNode) DeleteGroup(groupID models.GroupID) {
 			g.idx--
 		}
 		filtered = append(filtered, g)
-		filteredSeries = append(filteredSeries, h.result.Series[i])
+		filteredSeries = append(filteredSeries, n.result.Series[i])
 	}
-	h.indexes = filtered
-	h.result.Series = filteredSeries
+	n.indexes = filtered
+	n.result.Series = filteredSeries
 }
 
 type httpOutGroup struct {

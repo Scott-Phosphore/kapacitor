@@ -29,48 +29,48 @@ func newWindowNode(et *ExecutingTask, n *pipeline.WindowNode, l *log.Logger) (*W
 	return wn, nil
 }
 
-func (w *WindowNode) runWindow([]byte) error {
-	consumer := edge.NewGroupedConsumer(w.ins[0], w)
-	w.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+func (n *WindowNode) runWindow([]byte) error {
+	consumer := edge.NewGroupedConsumer(n.ins[0], n)
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 	return consumer.Consume()
 }
 
-func (w *WindowNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
-	r, err := w.newWindow(group, first)
+func (n *WindowNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+	r, err := n.newWindow(group, first)
 	if err != nil {
 		return nil, err
 	}
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		w.outs,
-		edge.NewTimedForwardReceiver(w.timer, r),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, r),
 	), nil
 }
 
-func (w *WindowNode) DeleteGroup(group models.GroupID) {
+func (n *WindowNode) DeleteGroup(group models.GroupID) {
 	// Nothing to do
 }
 
-func (w *WindowNode) newWindow(group edge.GroupInfo, first edge.PointMeta) (edge.ForwardReceiver, error) {
+func (n *WindowNode) newWindow(group edge.GroupInfo, first edge.PointMeta) (edge.ForwardReceiver, error) {
 	switch {
-	case w.w.Period != 0:
+	case n.w.Period != 0:
 		return newWindowByTime(
 			first.Name(),
 			first.Time(),
 			group,
-			w.w.Period,
-			w.w.Every,
-			w.w.AlignFlag,
-			w.w.FillPeriodFlag,
-			w.logger,
+			n.w.Period,
+			n.w.Every,
+			n.w.AlignFlag,
+			n.w.FillPeriodFlag,
+			n.logger,
 		), nil
-	case w.w.PeriodCount != 0:
+	case n.w.PeriodCount != 0:
 		return newWindowByCount(
 			first.Name(),
 			group,
-			int(w.w.PeriodCount),
-			int(w.w.EveryCount),
-			w.w.FillPeriodFlag,
-			w.logger,
+			int(n.w.PeriodCount),
+			int(n.w.EveryCount),
+			n.w.FillPeriodFlag,
+			n.logger,
 		), nil
 	default:
 		return nil, errors.New("unreachable code, window node should have a non-zero period or period count")

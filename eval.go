@@ -63,45 +63,45 @@ func newEvalNode(et *ExecutingTask, n *pipeline.EvalNode, l *log.Logger) (*EvalN
 	return en, nil
 }
 
-func (e *EvalNode) runEval(snapshot []byte) error {
+func (n *EvalNode) runEval(snapshot []byte) error {
 	consumer := edge.NewGroupedConsumer(
-		e.ins[0],
-		e,
+		n.ins[0],
+		n,
 	)
-	e.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 
 	return consumer.Consume()
 
 }
 
-func (e *EvalNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *EvalNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		e.outs,
-		edge.NewTimedForwardReceiver(e.timer, e.newGroup()),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, n.newGroup()),
 	), nil
 }
 
-func (e *EvalNode) newGroup() *evalGroup {
-	expressions := make([]stateful.Expression, len(e.expressions))
-	for i, exp := range e.expressions {
+func (n *EvalNode) newGroup() *evalGroup {
+	expressions := make([]stateful.Expression, len(n.expressions))
+	for i, exp := range n.expressions {
 		expressions[i] = exp.CopyReset()
 	}
 	return &evalGroup{
-		n:           e,
+		n:           n,
 		expressions: expressions,
 	}
 }
 
-func (e *EvalNode) DeleteGroup(group models.GroupID) {
+func (n *EvalNode) DeleteGroup(group models.GroupID) {
 }
 
-func (e *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTimeSetter) error {
+func (n *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTimeSetter) error {
 
-	vars := e.scopePool.Get()
-	defer e.scopePool.Put(vars)
+	vars := n.scopePool.Get()
+	defer n.scopePool.Put(vars)
 
 	for i, expr := range expressions {
-		err := fillScope(vars, e.refVarList[i], p)
+		err := fillScope(vars, n.refVarList[i], p)
 		if err != nil {
 			return err
 		}
@@ -109,15 +109,15 @@ func (e *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTime
 		if err != nil {
 			return err
 		}
-		name := e.e.AsList[i]
+		name := n.e.AsList[i]
 		vars.Set(name, v)
 	}
 	fields := p.Fields()
 	tags := p.Tags()
 	newTags := tags
-	if len(e.tags) > 0 {
+	if len(n.tags) > 0 {
 		newTags = newTags.Copy()
-		for tag := range e.tags {
+		for tag := range n.tags {
 			v, err := vars.Get(tag)
 			if err != nil {
 				return err
@@ -130,10 +130,10 @@ func (e *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTime
 		}
 	}
 	var newFields models.Fields
-	if e.e.KeepFlag {
-		if l := len(e.e.KeepList); l != 0 {
+	if n.e.KeepFlag {
+		if l := len(n.e.KeepList); l != 0 {
 			newFields = make(models.Fields, l)
-			for _, f := range e.e.KeepList {
+			for _, f := range n.e.KeepList {
 				// Try the vars scope first
 				if vars.Has(f) {
 					v, err := vars.Get(f)
@@ -149,11 +149,11 @@ func (e *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTime
 				}
 			}
 		} else {
-			newFields = make(models.Fields, len(fields)+len(e.e.AsList))
+			newFields = make(models.Fields, len(fields)+len(n.e.AsList))
 			for f, v := range fields {
 				newFields[f] = v
 			}
-			for _, f := range e.e.AsList {
+			for _, f := range n.e.AsList {
 				v, err := vars.Get(f)
 				if err != nil {
 					return err
@@ -162,9 +162,9 @@ func (e *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTime
 			}
 		}
 	} else {
-		newFields = make(models.Fields, len(e.e.AsList)-len(e.tags))
-		for _, f := range e.e.AsList {
-			if e.tags[f] {
+		newFields = make(models.Fields, len(n.e.AsList)-len(n.tags))
+		for _, f := range n.e.AsList {
+			if n.tags[f] {
 				continue
 			}
 			v, err := vars.Get(f)

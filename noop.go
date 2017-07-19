@@ -20,9 +20,9 @@ func newNoOpNode(et *ExecutingTask, n *pipeline.NoOpNode, l *log.Logger) (*NoOpN
 	return nn, nil
 }
 
-func (s *NoOpNode) runNoOp([]byte) error {
-	for m, ok := s.ins[0].Emit(); ok; m, ok = s.ins[0].Emit() {
-		if err := edge.Forward(s.outs, m); err != nil {
+func (n *NoOpNode) runNoOp([]byte) error {
+	for m, ok := n.ins[0].Emit(); ok; m, ok = n.ins[0].Emit() {
+		if err := edge.Forward(n.outs, m); err != nil {
 			return err
 		}
 	}

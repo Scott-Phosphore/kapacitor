@@ -38,52 +38,52 @@ func newLogNode(et *ExecutingTask, n *pipeline.LogNode, l *log.Logger) (*LogNode
 	return nn, nil
 }
 
-func (s *LogNode) runLog([]byte) error {
+func (n *LogNode) runLog([]byte) error {
 	consumer := edge.NewConsumerWithReceiver(
-		s.ins[0],
+		n.ins[0],
 		edge.NewReceiverFromForwardReceiverWithStats(
-			s.outs,
-			edge.NewTimedForwardReceiver(s.timer, s),
+			n.outs,
+			edge.NewTimedForwardReceiver(n.timer, n),
 		),
 	)
 	return consumer.Consume()
 
 }
 
-func (s *LogNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
-	return nil, s.batchBuffer.BeginBatch(begin)
+func (n *LogNode) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
+	return nil, n.batchBuffer.BeginBatch(begin)
 }
 
-func (s *LogNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
-	return nil, s.batchBuffer.BatchPoint(bp)
+func (n *LogNode) BatchPoint(bp edge.BatchPointMessage) (edge.Message, error) {
+	return nil, n.batchBuffer.BatchPoint(bp)
 }
 
-func (s *LogNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
-	return s.BufferedBatch(s.batchBuffer.BufferedBatchMessage(end))
+func (n *LogNode) EndBatch(end edge.EndBatchMessage) (edge.Message, error) {
+	return n.BufferedBatch(n.batchBuffer.BufferedBatchMessage(end))
 }
 
-func (s *LogNode) BufferedBatch(batch edge.BufferedBatchMessage) (edge.Message, error) {
-	s.buf.Reset()
-	if err := s.enc.Encode(batch); err != nil {
-		s.incrementErrorCount()
-		s.logger.Println("E!", err)
+func (n *LogNode) BufferedBatch(batch edge.BufferedBatchMessage) (edge.Message, error) {
+	n.buf.Reset()
+	if err := n.enc.Encode(batch); err != nil {
+		n.incrementErrorCount()
+		n.logger.Println("E!", err)
 		return batch, nil
 	}
-	s.logger.Println(s.key, s.buf.String())
+	n.logger.Println(n.key, n.buf.String())
 	return batch, nil
 }
 
-func (s *LogNode) Point(p edge.PointMessage) (edge.Message, error) {
-	s.buf.Reset()
-	if err := s.enc.Encode(p); err != nil {
-		s.incrementErrorCount()
-		s.logger.Println("E!", err)
+func (n *LogNode) Point(p edge.PointMessage) (edge.Message, error) {
+	n.buf.Reset()
+	if err := n.enc.Encode(p); err != nil {
+		n.incrementErrorCount()
+		n.logger.Println("E!", err)
 		return p, nil
 	}
-	s.logger.Println(s.key, s.buf.String())
+	n.logger.Println(n.key, n.buf.String())
 	return p, nil
 }
 
-func (s *LogNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
+func (n *LogNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
