@@ -139,12 +139,3 @@ func (n *FromNode) matches(p edge.PointMessage) bool {
 	}
 	return true
 }
-
-func setGroupOnPoint(p models.Point, allDimensions bool, dimensions models.Dimensions, excluded []string) models.Point {
-	if allDimensions {
-		dimensions.TagNames = filterExcludedTagNames(models.SortedKeys(p.Tags), excluded)
-	}
-	p.Group = models.ToGroupID(p.Name, p.Tags, dimensions)
-	p.Dimensions = dimensions
-	return p
-}

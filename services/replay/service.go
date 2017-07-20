@@ -1462,7 +1462,7 @@ func (r *Service) runQueryStream(source chan<- edge.PointMessage, q, cluster str
 	}
 	// Write results to sources
 	for _, res := range resp.Results {
-		batches, err := models.ResultToBatches(res, false)
+		batches, err := edge.ResultToBufferedBatches(res, false)
 		if err != nil {
 			return err
 		}
@@ -1471,10 +1471,10 @@ func (r *Service) runQueryStream(source chan<- edge.PointMessage, q, cluster str
 		// Find earliest time of first points
 		current := time.Time{}
 		for _, batch := range batches {
-			if len(batch.Points) > 0 &&
+			if len(batch.Points()) > 0 &&
 				(current.IsZero() ||
-					batch.Points[0].Time.Before(current)) {
-				current = batch.Points[0].Time
+					batch.Points()[0].Time().Before(current)) {
+				current = batch.Points()[0].Time()
 			}
 		}
 
@@ -1488,7 +1488,7 @@ func (r *Service) runQueryStream(source chan<- edge.PointMessage, q, cluster str
 
 			next := time.Time{}
 			for b := range batches {
-				l := len(batches[b].Points)
+				l := len(batches[b].Points())
 				if l == 0 {
 					if !finished[b] {
 						finishedCount++
@@ -1498,27 +1498,27 @@ func (r *Service) runQueryStream(source chan<- edge.PointMessage, q, cluster str
 				}
 				i := 0
 				for ; i < l; i++ {
-					bp := batches[b].Points[i]
-					if bp.Time.After(current) {
-						if next.IsZero() || bp.Time.Before(next) {
-							next = bp.Time
+					bp := batches[b].Points()[i]
+					if bp.Time().After(current) {
+						if next.IsZero() || bp.Time().Before(next) {
+							next = bp.Time()
 						}
 						break
 					}
 					// Write point
 					p := edge.NewPointMessage(
-						batches[b].Name,
+						batches[b].Name(),
 						dbrp.Database,
 						dbrp.RetentionPolicy,
 						models.Dimensions{},
-						bp.Fields,
-						bp.Tags,
-						bp.Time,
+						bp.Fields(),
+						bp.Tags(),
+						bp.Time(),
 					)
 					source <- p
 				}
 				// Remove written points
-				batches[b].Points = batches[b].Points[i:]
+				batches[b].SetPoints(batches[b].Points()[i:])
 			}
 			current = next
 		}
