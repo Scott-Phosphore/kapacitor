@@ -9,6 +9,8 @@
 - [#1345](https://github.com/influxdata/kapacitor/issues/1345): Add MQTT Alert Handler
 - [#1390](https://github.com/influxdata/kapacitor/issues/1390): Add built in functions to convert timestamps to integers
 - [#1425](https://github.com/influxdata/kapacitor/pull/1425): BREAKING: Combine and Flatten nodes previously erroneously operated across batch boundaries, this has been fixed.
+- [#1425](https://github.com/influxdata/kapacitor/pull/1425): BREAKING: Change over internal API to use message passing semantics.
+    The breaking change is that the Combine and Flatten nodes previously, but erroneously, operated across batch boundaries; this has been fixed.
 
 ### Bugfixes
 
