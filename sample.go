@@ -54,9 +54,6 @@ func (n *SampleNode) newGroup() *sampleGroup {
 	}
 }
 
-func (n *SampleNode) DeleteGroup(group models.GroupID) {
-}
-
 type sampleGroup struct {
 	n *SampleNode
 
@@ -92,6 +89,9 @@ func (g *sampleGroup) Point(p edge.PointMessage) (edge.Message, error) {
 
 func (g *sampleGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *sampleGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 func (n *SampleNode) shouldKeep(count int64, t time.Time) bool {

@@ -73,9 +73,6 @@ func (n *HTTPPostNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edg
 	), nil
 }
 
-func (n *HTTPPostNode) DeleteGroup(group models.GroupID) {
-}
-
 type httpPostGroup struct {
 	n      *HTTPPostNode
 	buffer *edge.BatchBuffer
@@ -107,6 +104,9 @@ func (g *httpPostGroup) Point(p edge.PointMessage) (edge.Message, error) {
 
 func (g *httpPostGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *httpPostGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 func (n *HTTPPostNode) postRow(row *models.Row) {

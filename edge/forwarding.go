@@ -8,6 +8,7 @@ type ForwardReceiver interface {
 	EndBatch(end EndBatchMessage) (Message, error)
 	Point(p PointMessage) (Message, error)
 	Barrier(b BarrierMessage) (Message, error)
+	DeleteGroup(d DeleteGroupMessage) (Message, error)
 }
 
 // ForwardBufferedReceiver handles messages as they arrive and can return a message to be forwarded to output edges.
@@ -73,6 +74,9 @@ func (fr *forwardingReceiver) Point(p PointMessage) error {
 }
 func (fr *forwardingReceiver) Barrier(b BarrierMessage) error {
 	return fr.forward(fr.r.Barrier(b))
+}
+func (fr *forwardingReceiver) DeleteGroup(d DeleteGroupMessage) error {
+	return fr.forward(fr.r.DeleteGroup(d))
 }
 
 func (fr *forwardingReceiver) forward(msg Message, err error) error {

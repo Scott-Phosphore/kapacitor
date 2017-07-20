@@ -19,7 +19,6 @@ type GroupedReceiver interface {
 	// NewGroup signals that a new group has been discovered in the data.
 	// Information on the group and the message that first triggered its creation are provided.
 	NewGroup(group GroupInfo, first PointMeta) (Receiver, error)
-	DeleteGroup(group models.GroupID)
 }
 
 // GroupInfo identifies and contians information about a specific group.
@@ -114,6 +113,17 @@ func (c *groupedConsumer) Barrier(b BarrierMessage) error {
 		if err := r.Barrier(b); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c *groupedConsumer) DeleteGroup(d DeleteGroupMessage) error {
+	id := d.GroupID()
+	r, ok := c.groups[id]
+	if ok {
+		delete(c.groups, id)
+		c.cardinality.Add(-1)
+		return r.DeleteGroup(d)
 	}
 	return nil
 }

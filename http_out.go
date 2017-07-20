@@ -125,27 +125,15 @@ func (n *HTTPOutNode) newGroup(groupID models.GroupID) *httpOutGroup {
 	n.indexes = append(n.indexes, g)
 	return g
 }
-
-func (n *HTTPOutNode) DeleteGroup(groupID models.GroupID) {
+func (n *HTTPOutNode) deleteGroup(idx int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	filteredSeries := n.result.Series[0:0]
-	filtered := n.indexes[0:0]
-	found := false
-	for i, g := range n.indexes {
-		if groupID == g.id {
-			found = true
-			continue
-		}
-		if found {
-			g.idx--
-		}
-		filtered = append(filtered, g)
-		filteredSeries = append(filteredSeries, n.result.Series[i])
+	for _, g := range n.indexes[idx+1:] {
+		g.idx--
 	}
-	n.indexes = filtered
-	n.result.Series = filteredSeries
+	n.indexes = append(n.indexes[0:idx], n.indexes[idx+1:]...)
+	n.result.Series = append(n.result.Series[0:idx], n.result.Series[idx+1:]...)
 }
 
 type httpOutGroup struct {
@@ -181,4 +169,8 @@ func (g *httpOutGroup) Point(p edge.PointMessage) (edge.Message, error) {
 
 func (g *httpOutGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *httpOutGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	g.n.deleteGroup(g.idx)
+	return d, nil
 }

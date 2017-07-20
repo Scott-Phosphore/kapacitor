@@ -50,9 +50,6 @@ func (n *FlattenNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge
 	}, nil
 }
 
-func (n *FlattenNode) DeleteGroup(group models.GroupID) {
-}
-
 type flattenBuffer struct {
 	n         *FlattenNode
 	time      time.Time
@@ -182,6 +179,9 @@ func (b *flattenBuffer) addPoint(p edge.FieldsTagsTimeGetter) (next time.Time, f
 
 func (b *flattenBuffer) Barrier(barrier edge.BarrierMessage) error {
 	return edge.Forward(b.n.outs, barrier)
+}
+func (b *flattenBuffer) DeleteGroup(d edge.DeleteGroupMessage) error {
+	return edge.Forward(b.n.outs, d)
 }
 
 func (n *FlattenNode) flatten(points []edge.FieldsTagsTimeGetter) (models.Fields, error) {

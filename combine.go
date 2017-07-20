@@ -69,9 +69,6 @@ func (n *CombineNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge
 	}, nil
 }
 
-func (n *CombineNode) DeleteGroup(group models.GroupID) {
-}
-
 type combineBuffer struct {
 	n           *CombineNode
 	time        time.Time
@@ -137,13 +134,10 @@ func (b *combineBuffer) addPoint(p edge.FieldsTagsTimeSetter) error {
 }
 
 func (b *combineBuffer) Barrier(barrier edge.BarrierMessage) error {
-	for _, out := range b.n.outs {
-		err := out.Collect(barrier)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return edge.Forward(b.n.outs, barrier)
+}
+func (b *combineBuffer) DeleteGroup(d edge.DeleteGroupMessage) error {
+	return edge.Forward(b.n.outs, d)
 }
 
 // Combine a set of points into all their combinations.
@@ -206,13 +200,11 @@ func (b *combineBuffer) combine() error {
 			np.SetTime(t.Round(b.n.c.Tolerance))
 
 			b.n.timer.Pause()
-			for _, out := range b.n.outs {
-				err := out.Collect(np)
-				if err != nil {
-					return err
-				}
-			}
+			err := edge.Forward(b.n.outs, np)
 			b.n.timer.Resume()
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	})

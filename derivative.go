@@ -47,9 +47,6 @@ func (n *DerivativeNode) newGroup() *derivativeGroup {
 	}
 }
 
-func (n *DerivativeNode) DeleteGroup(group models.GroupID) {
-}
-
 type derivativeGroup struct {
 	n        *DerivativeNode
 	previous edge.FieldsTagsTimeGetter
@@ -116,6 +113,9 @@ func (g *derivativeGroup) doDerivative(p edge.FieldsTagsTimeGetter, n edge.Field
 
 func (g *derivativeGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *derivativeGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 // derivative calculates the derivative between prev and cur.

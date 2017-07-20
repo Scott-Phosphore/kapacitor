@@ -595,10 +595,6 @@ func (n *AlertNode) restoreEvent(id string) (alert.Level, time.Time) {
 	return topicState.Level, topicState.Time
 }
 
-func (n *AlertNode) DeleteGroup(group models.GroupID) {
-	// Nothing to do
-}
-
 func deleteAlertHook(anonTopic string) deleteHook {
 	return func(tm *TaskMaster) {
 		tm.AlertService.DeleteTopic(anonTopic)
@@ -926,7 +922,10 @@ func (a *alertState) augmentFieldsWithEventState(p edge.FieldSetter, eventState 
 }
 
 func (a *alertState) Barrier(b edge.BarrierMessage) (edge.Message, error) {
-	panic("not implemented")
+	return b, nil
+}
+func (a *alertState) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 // Return the duration of the current alert state.

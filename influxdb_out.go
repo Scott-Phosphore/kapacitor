@@ -139,6 +139,9 @@ func (n *InfluxDBOutNode) Point(p edge.PointMessage) (edge.Message, error) {
 func (n *InfluxDBOutNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
+func (n *InfluxDBOutNode) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
+}
 
 func (n *InfluxDBOutNode) stopOut() {
 	n.wb.flush()

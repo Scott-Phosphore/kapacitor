@@ -87,3 +87,6 @@ func (n *LogNode) Point(p edge.PointMessage) (edge.Message, error) {
 func (n *LogNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
+func (n *LogNode) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
+}

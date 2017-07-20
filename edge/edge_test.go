@@ -158,6 +158,9 @@ func (r noopReceiver) Point(p edge.PointMessage) error {
 func (r noopReceiver) Barrier(b edge.BarrierMessage) error {
 	return nil
 }
+func (r noopReceiver) DeleteGroup(d edge.DeleteGroupMessage) error {
+	return nil
+}
 
 func BenchmarkConsumer(b *testing.B) {
 	var msg edge.Message

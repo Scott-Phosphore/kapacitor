@@ -101,9 +101,6 @@ func (n *K8sAutoscaleNode) newGroup() *k8sAutoscaleGroup {
 	}
 }
 
-func (n *K8sAutoscaleNode) DeleteGroup(group models.GroupID) {
-}
-
 type k8sAutoscaleGroup struct {
 	n *K8sAutoscaleNode
 
@@ -140,7 +137,10 @@ func (g *k8sAutoscaleGroup) Point(p edge.PointMessage) (edge.Message, error) {
 }
 
 func (g *k8sAutoscaleGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
-	panic("not implemented")
+	return b, nil
+}
+func (g *k8sAutoscaleGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 type resourceState struct {

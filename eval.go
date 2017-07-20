@@ -92,9 +92,6 @@ func (n *EvalNode) newGroup() *evalGroup {
 	}
 }
 
-func (n *EvalNode) DeleteGroup(group models.GroupID) {
-}
-
 func (n *EvalNode) eval(expressions []stateful.Expression, p edge.FieldsTagsTimeSetter) error {
 
 	vars := n.scopePool.Get()
@@ -225,4 +222,7 @@ func (g *evalGroup) doEval(p edge.FieldsTagsTimeSetter) bool {
 
 func (g *evalGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *evalGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }

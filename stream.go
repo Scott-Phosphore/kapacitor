@@ -117,6 +117,9 @@ func (n *FromNode) Point(p edge.PointMessage) (edge.Message, error) {
 func (n *FromNode) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
 }
+func (n *FromNode) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
+}
 
 func (n *FromNode) matches(p edge.PointMessage) bool {
 	if n.db != "" && p.Database() != n.db {

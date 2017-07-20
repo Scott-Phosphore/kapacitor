@@ -1,6 +1,8 @@
 package edge
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // Consumer reads messages off an edge and passes them to a receiver.
 type Consumer interface {
@@ -16,6 +18,7 @@ type Receiver interface {
 	EndBatch(end EndBatchMessage) error
 	Point(p PointMessage) error
 	Barrier(b BarrierMessage) error
+	DeleteGroup(d DeleteGroupMessage) error
 }
 
 type consumer struct {

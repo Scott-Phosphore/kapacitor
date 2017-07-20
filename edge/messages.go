@@ -31,6 +31,18 @@ type Message interface {
 	//markShared()
 }
 
+type MessageType int
+
+const (
+	BeginBatch MessageType = iota
+	BatchPoint
+	EndBatch
+	BufferedBatch
+	Point
+	Barrier
+	DeleteGroup
+)
+
 type GroupIDGetter interface {
 	GroupID() models.GroupID
 }
@@ -105,17 +117,6 @@ type PointMeta interface {
 	TagGetter
 	TimeGetter
 }
-
-type MessageType int
-
-const (
-	BeginBatch MessageType = iota
-	BatchPoint
-	EndBatch
-	BufferedBatch
-	Point
-	Barrier
-)
 
 func (m MessageType) String() string {
 	switch m {
@@ -903,4 +904,21 @@ func (b *barrierMessage) Time() time.Time {
 }
 func (b *barrierMessage) SetTime(time time.Time) {
 	b.time = time
+}
+
+type DeleteGroupMessage interface {
+	Message
+	GroupIDGetter
+}
+
+type deleteGroupMessage struct {
+	groupID models.GroupID
+}
+
+func (d *deleteGroupMessage) Type() MessageType {
+	return DeleteGroup
+}
+
+func (d *deleteGroupMessage) GroupID() models.GroupID {
+	return d.groupID
 }

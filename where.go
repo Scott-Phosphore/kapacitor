@@ -6,7 +6,6 @@ import (
 	"log"
 
 	"github.com/influxdata/kapacitor/edge"
-	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
 	"github.com/influxdata/kapacitor/tick/ast"
 	"github.com/influxdata/kapacitor/tick/stateful"
@@ -66,9 +65,6 @@ func (n *WhereNode) newGroup() *whereGroup {
 	}
 }
 
-func (n *WhereNode) DeleteGroup(group models.GroupID) {
-}
-
 type whereGroup struct {
 	n    *WhereNode
 	expr stateful.Expression
@@ -107,4 +103,7 @@ func (g *whereGroup) doWhere(p edge.FieldsTagsTimeGetterMessage) (edge.Message, 
 
 func (g *whereGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *whereGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }

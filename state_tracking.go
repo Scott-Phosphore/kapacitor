@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/influxdata/kapacitor/edge"
-	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
 	"github.com/influxdata/kapacitor/tick/ast"
 	"github.com/influxdata/kapacitor/tick/stateful"
@@ -63,10 +62,6 @@ func (stn *StateTrackingNode) newGroup() *stateTrackingGroup {
 	return g
 }
 
-func (stn *StateTrackingNode) DeleteGroup(group models.GroupID) {
-	// Nothing to do
-}
-
 func (g *stateTrackingGroup) BeginBatch(begin edge.BeginBatchMessage) (edge.Message, error) {
 	g.tracker.reset()
 	return begin, nil
@@ -112,6 +107,9 @@ func (g *stateTrackingGroup) track(p edge.FieldsTagsTimeSetter) error {
 
 func (g *stateTrackingGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *stateTrackingGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 type stateDurationTracker struct {

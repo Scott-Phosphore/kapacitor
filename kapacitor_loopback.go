@@ -126,3 +126,6 @@ func (n *KapacitorLoopbackNode) EndBatch(edge.EndBatchMessage) error {
 func (n *KapacitorLoopbackNode) Barrier(edge.BarrierMessage) error {
 	return nil
 }
+func (n *KapacitorLoopbackNode) DeleteGroup(edge.DeleteGroupMessage) error {
+	return nil
+}

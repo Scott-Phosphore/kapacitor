@@ -70,3 +70,9 @@ func (tr *timedForwardReceiver) Barrier(b BarrierMessage) (m Message, err error)
 	tr.timer.Stop()
 	return
 }
+func (tr *timedForwardReceiver) DeleteGroup(d DeleteGroupMessage) (m Message, err error) {
+	tr.timer.Start()
+	m, err = tr.r.DeleteGroup(d)
+	tr.timer.Stop()
+	return
+}

@@ -89,9 +89,6 @@ func (n *InfluxQLNode) newGroup(first edge.PointMeta) edge.ForwardReceiver {
 	return &g
 }
 
-func (n *InfluxQLNode) DeleteGroup(group models.GroupID) {
-}
-
 type influxqlGroup struct {
 	n *InfluxQLNode
 
@@ -217,6 +214,9 @@ func (g *influxqlGroup) realizeReduceContext(kind reflect.Kind) error {
 
 func (g *influxqlGroup) Barrier(b edge.BarrierMessage) (edge.Message, error) {
 	return b, nil
+}
+func (g *influxqlGroup) DeleteGroup(d edge.DeleteGroupMessage) (edge.Message, error) {
+	return d, nil
 }
 
 type influxqlStreamingTransformGroup struct {
