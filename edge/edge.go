@@ -22,7 +22,6 @@ type Edge interface {
 	// Future calls to Collect return the error ErrAborted.
 	Abort()
 	// Type indicates whether the edge will emit stream or batch data.
-	// TODO: Need to not use the pipeline.EdgeType here.
 	Type() pipeline.EdgeType
 }
 

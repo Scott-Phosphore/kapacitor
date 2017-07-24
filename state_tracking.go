@@ -17,48 +17,46 @@ type stateTracker interface {
 }
 
 type stateTrackingGroup struct {
-	stn *StateTrackingNode
+	n *StateTrackingNode
 	stateful.Expression
-	stateful.ScopePool
 	tracker stateTracker
 }
 
 type StateTrackingNode struct {
 	node
-	lambda *ast.LambdaNode
-	as     string
+	as string
+
+	expr      stateful.Expression
+	scopePool stateful.ScopePool
 
 	newTracker func() stateTracker
 }
 
-func (stn *StateTrackingNode) runStateTracking(_ []byte) error {
+func (n *StateTrackingNode) runStateTracking(_ []byte) error {
 	consumer := edge.NewGroupedConsumer(
-		stn.ins[0],
-		stn,
+		n.ins[0],
+		n,
 	)
-	stn.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
+	n.statMap.Set(statCardinalityGauge, consumer.CardinalityVar())
 	return consumer.Consume()
 }
 
-func (stn *StateTrackingNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
+func (n *StateTrackingNode) NewGroup(group edge.GroupInfo, first edge.PointMeta) (edge.Receiver, error) {
 	return edge.NewReceiverFromForwardReceiverWithStats(
-		stn.outs,
-		edge.NewTimedForwardReceiver(stn.timer, stn.newGroup()),
+		n.outs,
+		edge.NewTimedForwardReceiver(n.timer, n.newGroup()),
 	), nil
 }
 
-func (stn *StateTrackingNode) newGroup() *stateTrackingGroup {
+func (n *StateTrackingNode) newGroup() *stateTrackingGroup {
 	// Create a new tracking group
 	g := &stateTrackingGroup{
-		stn: stn,
+		n: n,
 	}
 
-	// Error is explicitly checked when the StateTrackingNode is first created.
-	// TODO(nathanielc): Update the stateful expression API to be able to create a new expression from an existing expression.
-	g.Expression, _ = stateful.NewExpression(stn.lambda.Expression)
-	g.ScopePool = stateful.NewScopePool(ast.FindReferenceVariables(stn.lambda.Expression))
+	g.Expression = n.expr.CopyReset()
 
-	g.tracker = stn.newTracker()
+	g.tracker = n.newTracker()
 	return g
 }
 
@@ -71,8 +69,8 @@ func (g *stateTrackingGroup) BatchPoint(bp edge.BatchPointMessage) (edge.Message
 	bp = bp.ShallowCopy()
 	err := g.track(bp)
 	if err != nil {
-		g.stn.incrementErrorCount()
-		g.stn.logger.Println("E! error while evaluating expression:", err)
+		g.n.incrementErrorCount()
+		g.n.logger.Println("E! error while evaluating expression:", err)
 		return nil, nil
 	}
 	return bp, nil
@@ -86,21 +84,21 @@ func (g *stateTrackingGroup) Point(p edge.PointMessage) (edge.Message, error) {
 	p = p.ShallowCopy()
 	err := g.track(p)
 	if err != nil {
-		g.stn.incrementErrorCount()
-		g.stn.logger.Println("E! error while evaluating expression:", err)
+		g.n.incrementErrorCount()
+		g.n.logger.Println("E! error while evaluating expression:", err)
 		return nil, nil
 	}
 	return p, nil
 }
 
 func (g *stateTrackingGroup) track(p edge.FieldsTagsTimeSetter) error {
-	pass, err := EvalPredicate(g.Expression, g.ScopePool, p)
+	pass, err := EvalPredicate(g.Expression, g.n.scopePool, p)
 	if err != nil {
 		return err
 	}
 
 	fields := p.Fields().Copy()
-	fields[g.stn.as] = g.tracker.track(p.Time(), pass)
+	fields[g.n.as] = g.tracker.track(p.Time(), pass)
 	p.SetFields(fields)
 	return nil
 }
@@ -139,17 +137,19 @@ func newStateDurationNode(et *ExecutingTask, sd *pipeline.StateDurationNode, l *
 		return nil, fmt.Errorf("nil expression passed to StateDurationNode")
 	}
 	// Validate lambda expression
-	if _, err := stateful.NewExpression(sd.Lambda.Expression); err != nil {
+	expr, err := stateful.NewExpression(sd.Lambda.Expression)
+	if err != nil {
 		return nil, err
 	}
-	stn := &StateTrackingNode{
+	n := &StateTrackingNode{
 		node:       node{Node: sd, et: et, logger: l},
-		lambda:     sd.Lambda,
 		as:         sd.As,
 		newTracker: func() stateTracker { return &stateDurationTracker{sd: sd} },
+		expr:       expr,
+		scopePool:  stateful.NewScopePool(ast.FindReferenceVariables(sd.Lambda.Expression)),
 	}
-	stn.node.runF = stn.runStateTracking
-	return stn, nil
+	n.node.runF = n.runStateTracking
+	return n, nil
 }
 
 type stateCountTracker struct {
@@ -175,15 +175,17 @@ func newStateCountNode(et *ExecutingTask, sc *pipeline.StateCountNode, l *log.Lo
 		return nil, fmt.Errorf("nil expression passed to StateCountNode")
 	}
 	// Validate lambda expression
-	if _, err := stateful.NewExpression(sc.Lambda.Expression); err != nil {
+	expr, err := stateful.NewExpression(sc.Lambda.Expression)
+	if err != nil {
 		return nil, err
 	}
-	stn := &StateTrackingNode{
+	n := &StateTrackingNode{
 		node:       node{Node: sc, et: et, logger: l},
-		lambda:     sc.Lambda,
 		as:         sc.As,
 		newTracker: func() stateTracker { return &stateCountTracker{} },
+		expr:       expr,
+		scopePool:  stateful.NewScopePool(ast.FindReferenceVariables(sc.Lambda.Expression)),
 	}
-	stn.node.runF = stn.runStateTracking
-	return stn, nil
+	n.node.runF = n.runStateTracking
+	return n, nil
 }

@@ -89,8 +89,7 @@ func (n *JoinNode) Point(src int, p edge.PointMessage) error {
 }
 
 func (n *JoinNode) Barrier(src int, b edge.BarrierMessage) error {
-	//TODO: implement barrier
-	return nil
+	return edge.Forward(n.outs, b)
 }
 
 func (n *JoinNode) Finish() error {
