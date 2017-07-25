@@ -10,6 +10,7 @@ import (
 	"github.com/influxdata/kapacitor/models"
 	"github.com/influxdata/kapacitor/pipeline"
 	k8s "github.com/influxdata/kapacitor/services/k8s/client"
+	swarm "github.com/influxdata/kapacitor/services/swarm/client"
 	"github.com/influxdata/kapacitor/tick/ast"
 	"github.com/influxdata/kapacitor/tick/stateful"
 	"github.com/pkg/errors"
@@ -314,7 +315,7 @@ func (n *AutoscaleNode) evalExpr(
 	return int(i), err
 }
 
-///////////////////////////////////////////
+////////////////////////////////////
 // K8s implementation of Autoscaler
 
 type k8sAutoscaler struct {
@@ -443,5 +444,94 @@ func (a *k8sAutoscaler) SetResourceIDOnTags(id ResourceID, tags models.Tags) {
 	}
 	if a.nameTag != "" {
 		tags[a.nameTag] = kid.Name
+	}
+}
+
+/////////////////////////////////////////////
+// Docker Swarm implementation of Autoscaler
+
+type swarmAutoscaler struct {
+	client swarm.Client
+
+	serviceName       string
+	serviceNameTag    string
+	outServiceNameTag string
+}
+
+func newSwarmAutoscaleNode(et *ExecutingTask, n *pipeline.SwarmAutoscaleNode, l *log.Logger) (*AutoscaleNode, error) {
+	client, err := et.tm.SwarmService.Client(n.Cluster)
+	if err != nil {
+		return nil, fmt.Errorf("cannot use the swarmAutoscale node, could not create swarm client: %v", err)
+	}
+	a := &swarmAutoscaler{
+		client:            client,
+		serviceName:       n.ServiceName,
+		serviceNameTag:    n.ServiceNameTag,
+		outServiceNameTag: n.OutputServiceNameTag,
+	}
+	return newAutoscaleNode(
+		et,
+		l,
+		n,
+		a,
+		int(n.Min),
+		int(n.Max),
+		n.IncreaseCooldown,
+		n.DecreaseCooldown,
+		n.CurrentField,
+		n.Replicas,
+	)
+}
+
+type swarmResourceID string
+
+func (id swarmResourceID) ID() string {
+	return string(id)
+}
+
+func (a *swarmAutoscaler) ResourceIDFromTags(tags models.Tags) (ResourceID, error) {
+	// Get the name of the resource
+	var name string
+	switch {
+	case a.serviceName != "":
+		name = a.serviceName
+	case a.serviceNameTag != "":
+		t, ok := tags[a.serviceNameTag]
+		if ok {
+			name = t
+		}
+	default:
+		return nil, errors.New("expected one of ServiceName or ServiceNameTag to be set")
+	}
+	if name == "" {
+		return nil, errors.New("could not determine the name of the resource")
+	}
+	return swarmResourceID(name), nil
+}
+
+func (a *swarmAutoscaler) Replicas(id ResourceID) (int, error) {
+	sid := id.ID()
+	service, err := a.client.Service(sid)
+	if err != nil {
+		return 0, errors.Wrapf(err, "failed to get swarm service for %q", id)
+	}
+	return int(*service.Spec.Mode.Replicated.Replicas), nil
+
+}
+
+func (a *swarmAutoscaler) SetReplicas(id ResourceID, replicas int) error {
+	sid := id.ID()
+	service, err := a.client.Service(sid)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get swarm service for %q", id)
+	}
+	*service.Spec.Mode.Replicated.Replicas = uint64(replicas)
+
+	return a.client.UpdateService(service)
+}
+
+func (a *swarmAutoscaler) SetResourceIDOnTags(id ResourceID, tags models.Tags) {
+	if a.outServiceNameTag != "" {
+		tags[a.outServiceNameTag] = id.ID()
 	}
 }
