@@ -484,7 +484,7 @@ func (s *Server) writeData() error {
 }
 
 func (s *Server) writePoint(pt models.Point) error {
-	strs, floats, ints := s.fieldsToTypedMaps(pt.Fields)
+	strs, floats, ints, bools := s.fieldsToTypedMaps(pt.Fields)
 	udfPoint := &agent.Point{
 		Time:            pt.Time.UnixNano(),
 		Name:            pt.Name,
@@ -497,6 +497,7 @@ func (s *Server) writePoint(pt models.Point) error {
 		FieldsDouble:    floats,
 		FieldsInt:       ints,
 		FieldsString:    strs,
+		FieldsBool:      bools,
 	}
 	req := &agent.Request{
 		Message: &agent.Request_Point{udfPoint},
@@ -508,6 +509,7 @@ func (s *Server) fieldsToTypedMaps(fields models.Fields) (
 	strs map[string]string,
 	floats map[string]float64,
 	ints map[string]int64,
+	bools map[string]bool,
 ) {
 	for k, v := range fields {
 		switch value := v.(type) {
@@ -526,6 +528,11 @@ func (s *Server) fieldsToTypedMaps(fields models.Fields) (
 				ints = make(map[string]int64)
 			}
 			ints[k] = value
+		case bool:
+			if bools == nil {
+				bools = make(map[string]bool)
+			}
+			bools[k] = value
 		default:
 			panic("unsupported field value type")
 		}
@@ -537,6 +544,7 @@ func (s *Server) typeMapsToFields(
 	strs map[string]string,
 	floats map[string]float64,
 	ints map[string]int64,
+	bools map[string]bool,
 ) models.Fields {
 	fields := make(models.Fields)
 	for k, v := range strs {
@@ -546,6 +554,9 @@ func (s *Server) typeMapsToFields(
 		fields[k] = v
 	}
 	for k, v := range floats {
+		fields[k] = v
+	}
+	for k, v := range bools {
 		fields[k] = v
 	}
 	return fields
@@ -568,7 +579,7 @@ func (s *Server) writeBatch(b models.Batch) error {
 	rp := &agent.Request_Point{}
 	req.Message = rp
 	for _, pt := range b.Points {
-		strs, floats, ints := s.fieldsToTypedMaps(pt.Fields)
+		strs, floats, ints, bools := s.fieldsToTypedMaps(pt.Fields)
 		udfPoint := &agent.Point{
 			Time:         pt.Time.UnixNano(),
 			Group:        string(b.Group),
@@ -576,6 +587,7 @@ func (s *Server) writeBatch(b models.Batch) error {
 			FieldsDouble: floats,
 			FieldsInt:    ints,
 			FieldsString: strs,
+			FieldsBool:   bools,
 		}
 		rp.Point = udfPoint
 		err := s.writeRequest(req)
@@ -673,6 +685,7 @@ func (s *Server) handleResponse(response *agent.Response) error {
 					msg.Point.FieldsString,
 					msg.Point.FieldsDouble,
 					msg.Point.FieldsInt,
+					msg.Point.FieldsBool,
 				),
 			}
 			s.batch.Points = append(s.batch.Points, pt)
@@ -689,6 +702,7 @@ func (s *Server) handleResponse(response *agent.Response) error {
 					msg.Point.FieldsString,
 					msg.Point.FieldsDouble,
 					msg.Point.FieldsInt,
+					msg.Point.FieldsBool,
 				),
 			}
 			select {
